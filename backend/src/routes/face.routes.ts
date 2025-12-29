@@ -78,13 +78,24 @@ router.post(
 
             // Search for matching faces
             const faceService = getFaceRecognitionService();
+            console.log(`[FACE] Searching faces in gallery ${data.galleryId}`);
+            console.log(`[FACE] Using provider: ${faceService.getProviderName()}`);
+
             const matches = await faceService.searchFaces(
                 req.file.buffer,
                 data.galleryId,
                 80 // 80% threshold
             );
 
+            console.log(`[FACE] Found ${matches.length} matches:`, matches.map(m => ({ photoId: m.photoId, similarity: m.similarity })));
             const matchedPhotoIds = matches.map(m => m.photoId);
+
+            // Get matched photo details for debugging
+            const matchedPhotos = await prisma.photo.findMany({
+                where: { id: { in: matchedPhotoIds } },
+                select: { id: true, filename: true },
+            });
+            console.log(`[FACE] Matched photos:`, matchedPhotos.map(p => p.filename));
 
             // Create guest session
             const guest = await prisma.guest.create({
@@ -104,6 +115,7 @@ router.post(
             res.json({
                 sessionToken: guest.sessionToken,
                 matchedCount: matchedPhotoIds.length,
+                matchedPhotos: matchedPhotos.map(p => ({ id: p.id, filename: p.filename })),
                 gallery: {
                     id: gallery.id,
                     name: gallery.name,

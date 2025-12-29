@@ -65,18 +65,16 @@ export async function apiRequest<T>(
 
     const headers: Record<string, string> = {};
 
-    // Add auth headers
-    if (useAuth) {
-        const token = getAuthToken();
-        if (token) {
-            headers['Authorization'] = `Bearer ${token}`;
-        }
-    }
-
+    // Add auth headers - session token takes priority over auth token
     if (useSession) {
         const token = getSessionToken();
         if (token) {
             headers['x-session-token'] = token;
+        }
+    } else if (useAuth) {
+        const token = getAuthToken();
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
         }
     }
 

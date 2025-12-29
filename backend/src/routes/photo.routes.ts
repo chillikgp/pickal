@@ -139,7 +139,7 @@ router.post(
                 photo: {
                     id: photo.id,
                     filename: photo.filename,
-                    webUrl: webResult.url,
+                    webUrl: await storageService.getSignedUrl(webResult.key),
                     lqipBase64: photo.lqipBase64,
                     width: photo.width,
                     height: photo.height,
@@ -163,6 +163,10 @@ router.post(
 router.get('/gallery/:galleryId', requireAnyAuth, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
         const { galleryId } = req.params;
+        console.log(`[PHOTOS] GET /gallery/${galleryId} - userRole: ${req.userRole}`);
+        if (req.guest) {
+            console.log(`[PHOTOS] Guest session found - matchedPhotoIds: ${JSON.stringify(req.guest.matchedPhotoIds)}`);
+        }
 
         // Verify access
         const gallery = await prisma.gallery.findUnique({
@@ -218,7 +222,10 @@ router.get('/gallery/:galleryId', requireAnyAuth, async (req: AuthenticatedReque
         // PERMISSION: Guests can only see their matched photos
         if (req.userRole === 'guest') {
             const matchedIds = req.guest!.matchedPhotoIds;
+            console.log(`[PHOTOS] Guest filtering - matchedPhotoIds: ${JSON.stringify(matchedIds)}`);
+            console.log(`[PHOTOS] Total photos before filter: ${photos.length}`);
             photos = photos.filter(p => matchedIds.includes(p.id));
+            console.log(`[PHOTOS] Photos after filter: ${photos.length}`);
         }
 
         // Add signed URLs

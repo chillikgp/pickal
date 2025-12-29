@@ -18,13 +18,17 @@ export function getStorageService(): IStorageService {
         if (process.env.USE_MOCK_SERVICES === 'true') {
             storageService = mockStorageService;
         } else {
-            // TODO: Implement and import AWS S3 service
-            // storageService = new S3StorageService();
-            console.warn('AWS S3 service not implemented, falling back to mock');
-            storageService = mockStorageService;
+            try {
+                const { s3StorageService } = require('./aws/storage.service.js');
+                storageService = s3StorageService;
+                console.log('✅ Using AWS S3 for storage');
+            } catch (error: any) {
+                console.warn('⚠️  Failed to initialize S3:', error.message);
+                storageService = mockStorageService;
+            }
         }
     }
-    return storageService;
+    return storageService!;
 }
 
 // Face recognition service instance
@@ -35,11 +39,16 @@ export function getFaceRecognitionService(): IFaceRecognitionService {
         if (process.env.USE_MOCK_SERVICES === 'true') {
             faceRecognitionService = mockFaceRecognitionService;
         } else {
-            // TODO: Implement and import AWS Rekognition service
-            // faceRecognitionService = new RekognitionService();
-            console.warn('AWS Rekognition service not implemented, falling back to mock');
-            faceRecognitionService = mockFaceRecognitionService;
+            try {
+                const { rekognitionService } = require('./aws/face-recognition.service.js');
+                faceRecognitionService = rekognitionService;
+                console.log('✅ Using AWS Rekognition for face recognition');
+            } catch (error: any) {
+                console.warn('⚠️  Failed to initialize Rekognition:', error.message);
+                faceRecognitionService = mockFaceRecognitionService;
+            }
         }
     }
-    return faceRecognitionService;
+    return faceRecognitionService!;
 }
+
