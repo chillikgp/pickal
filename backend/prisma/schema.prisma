@@ -1,0 +1,316 @@
+// Prisma Schema for Client Gallery for Photographers
+// Stores FaceIds only (no raw face images) - extensible for vector embeddings later
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// PHOTOGRAPHER (Admin User)
+// ============================================================================
+
+model Photographer {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  name         String
+  businessName String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  galleries Gallery[]
+
+  @@map("photographers")
+}
+
+// ============================================================================
+// GALLERY
+// ============================================================================
+
+enum GalleryAccessMode {
+  PRIVATE_KEY  // Full access via private key
+  GUEST_SELFIE // Limited access via selfie matching
+}
+
+enum SelectionState {
+  DISABLED // Selection not available
+  OPEN     // Primary clients can select
+  LOCKED   // Selection frozen, no changes allowed
+}
+
+model Gallery {
+  id             String            @id @default(uuid())
+  name           String
+  description    String?
+  eventDate      DateTime?
+  
+  // Access settings
+  privateKey     String            @unique @default(uuid())
+  accessModes    GalleryAccessMode[] @default([PRIVATE_KEY, GUEST_SELFIE])
+  
+  // Feature toggles
+  downloadsEnabled    Boolean       @default(false)
+  downloadResolution  String        @default("web") // "web" or "original"
+  selectionState      SelectionState @default(DISABLED)
+  commentsEnabled     Boolean       @default(true)
+  
+  // Ownership
+  photographerId String
+  photographer   Photographer      @relation(fields: [photographerId], references: [id], onDelete: Cascade)
+  
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  sections       Section[]
+  photos         Photo[]
+  primaryClients PrimaryClient[]
+  guests         Guest[]
+
+  @@index([photographerId])
+  @@index([privateKey])
+  @@map("galleries")
+}
+
+// ============================================================================
+// SECTION (Logical grouping within a gallery)
+// ============================================================================
+
+model Section {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  sortOrder   Int      @default(0)
+  
+  galleryId   String
+  gallery     Gallery  @relation(fields: [galleryId], references: [id], onDelete: Cascade)
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  photos      Photo[]
+
+  @@index([galleryId])
+  @@map("sections")
+}
+
+// ============================================================================
+// PHOTO
+// ============================================================================
+
+model Photo {
+  id              String   @id @default(uuid())
+  filename        String
+  originalKey     String   // S3 key for original image
+  webKey          String   // S3 key for web-optimized image
+  lqipBase64      String?  // Low-quality image placeholder (base64)
+  
+  width           Int?
+  height          Int?
+  fileSize        Int?     // Original file size in bytes
+  mimeType        String   @default("image/jpeg")
+  
+  sortOrder       Int      @default(0)
+  
+  galleryId       String
+  gallery         Gallery  @relation(fields: [galleryId], references: [id], onDelete: Cascade)
+  
+  sectionId       String?
+  section         Section? @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  faceData        FaceData[]
+  selections      Selection[]
+  comments        Comment[]
+  printRequests   PrintRequest[]
+
+  @@index([galleryId])
+  @@index([sectionId])
+  @@map("photos")
+}
+
+// ============================================================================
+// FACE DATA
+// Stores only FaceIds from Rekognition (no raw face images)
+// Schema designed for future vector embedding support
+// ============================================================================
+
+model FaceData {
+  id              String   @id @default(uuid())
+  
+  // AWS Rekognition FaceId (external reference, no raw data stored)
+  externalFaceId  String   
+  
+  // Provider info for future multi-provider support
+  provider        String   @default("rekognition") // "rekognition" | "arcface" | etc.
+  
+  // Optional: bounding box for face location (normalized 0-1)
+  boundingBox     Json?    // { left, top, width, height }
+  
+  // Confidence score from detection (0-100)
+  confidence      Float?
+  
+  // Future: vector embedding storage (e.g., for ArcFace)
+  // embedding      Float[]  // Uncomment when switching to self-hosted
+  // embeddingModel String?  // e.g., "arcface-r100"
+  
+  photoId         String
+  photo           Photo    @relation(fields: [photoId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime @default(now())
+
+  @@index([photoId])
+  @@index([externalFaceId])
+  @@map("face_data")
+}
+
+// ============================================================================
+// PRIMARY CLIENT (Full gallery access via private key)
+// ============================================================================
+
+model PrimaryClient {
+  id           String   @id @default(uuid())
+  sessionToken String   @unique @default(uuid())
+  name         String?
+  email        String?
+  
+  galleryId    String
+  gallery      Gallery  @relation(fields: [galleryId], references: [id], onDelete: Cascade)
+  
+  createdAt    DateTime @default(now())
+  lastAccessAt DateTime @default(now())
+
+  selections    Selection[]
+  comments      Comment[]
+  printRequests PrintRequest[]
+
+  @@index([galleryId])
+  @@index([sessionToken])
+  @@map("primary_clients")
+}
+
+// ============================================================================
+// GUEST (Selfie-based access, sees only matched photos)
+// ============================================================================
+
+model Guest {
+  id            String   @id @default(uuid())
+  sessionToken  String   @unique @default(uuid())
+  mobileNumber  String
+  
+  // Reference to the selfie used for matching (stored in S3)
+  selfieKey     String?
+  
+  // Matched photo IDs (cached for performance)
+  matchedPhotoIds String[] @default([])
+  
+  galleryId     String
+  gallery       Gallery  @relation(fields: [galleryId], references: [id], onDelete: Cascade)
+  
+  createdAt     DateTime @default(now())
+  lastAccessAt  DateTime @default(now())
+
+  printRequests PrintRequest[]
+
+  @@index([galleryId])
+  @@index([sessionToken])
+  @@index([mobileNumber, galleryId])
+  @@map("guests")
+}
+
+// ============================================================================
+// SELECTION (Primary clients only)
+// Tracks who added and when, with session reference for auditability
+// ============================================================================
+
+model Selection {
+  id              String   @id @default(uuid())
+  
+  photoId         String
+  photo           Photo    @relation(fields: [photoId], references: [id], onDelete: Cascade)
+  
+  primaryClientId String
+  primaryClient   PrimaryClient @relation(fields: [primaryClientId], references: [id], onDelete: Cascade)
+  
+  // Session tracking for audit trail
+  addedBySessionId String  // Reference to the session that created this selection
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([photoId, primaryClientId])
+  @@index([primaryClientId])
+  @@index([photoId])
+  @@map("selections")
+}
+
+// ============================================================================
+// COMMENT (Primary clients only)
+// ============================================================================
+
+model Comment {
+  id              String   @id @default(uuid())
+  content         String
+  
+  photoId         String
+  photo           Photo    @relation(fields: [photoId], references: [id], onDelete: Cascade)
+  
+  primaryClientId String
+  primaryClient   PrimaryClient @relation(fields: [primaryClientId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([photoId])
+  @@index([primaryClientId])
+  @@map("comments")
+}
+
+// ============================================================================
+// PRINT REQUEST (Primary clients and guests)
+// ============================================================================
+
+enum PrintRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  FULFILLED
+}
+
+model PrintRequest {
+  id              String             @id @default(uuid())
+  status          PrintRequestStatus @default(PENDING)
+  
+  quantity        Int                @default(1)
+  size            String?            // e.g., "4x6", "8x10"
+  notes           String?
+  
+  // Photographer response
+  responseNote    String?
+  respondedAt     DateTime?
+  
+  photoId         String
+  photo           Photo              @relation(fields: [photoId], references: [id], onDelete: Cascade)
+  
+  // Either primary client OR guest (one will be null)
+  primaryClientId String?
+  primaryClient   PrimaryClient?     @relation(fields: [primaryClientId], references: [id], onDelete: Cascade)
+  
+  guestId         String?
+  guest           Guest?             @relation(fields: [guestId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@index([photoId])
+  @@index([primaryClientId])
+  @@index([guestId])
+  @@index([status])
+  @@map("print_requests")
+}
