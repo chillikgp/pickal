@@ -142,6 +142,7 @@ export interface Gallery {
     downloadResolution: 'web' | 'original';
     selectionState: 'DISABLED' | 'OPEN' | 'LOCKED';
     commentsEnabled: boolean;
+    selfieMatchingEnabled?: boolean;
     coverPhotoId?: string | null;
     coverPhoto?: Photo;
     photographer?: {
@@ -194,6 +195,12 @@ export const galleryApi = {
 
     getSelections: (id: string) =>
         apiRequest<{ selections: unknown[]; summary: unknown }>(`/api/galleries/${id}/selections`),
+
+    getPublicConfig: (id: string) =>
+        apiRequest<{ galleryId: string; selfieMatchingEnabled: boolean; downloadsEnabled: boolean; accessModes: string[] }>(
+            `/api/galleries/${id}/public-config`,
+            { useAuth: false }
+        ),
 };
 
 // ============================================================================

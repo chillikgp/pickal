@@ -38,6 +38,7 @@ export default function GalleryDetailPage() {
     const [downloadsEnabled, setDownloadsEnabled] = useState(false);
     const [downloadResolution, setDownloadResolution] = useState<'web' | 'original'>('web');
     const [selectionState, setSelectionState] = useState<'DISABLED' | 'OPEN' | 'LOCKED'>('DISABLED');
+    const [selfieMatchingEnabled, setSelfieMatchingEnabled] = useState(true);
 
     // Edit details state
     const [editName, setEditName] = useState('');
@@ -57,6 +58,7 @@ export default function GalleryDetailPage() {
             setDownloadsEnabled(galleryRes.gallery.downloadsEnabled);
             setDownloadResolution(galleryRes.gallery.downloadResolution);
             setSelectionState(galleryRes.gallery.selectionState);
+            setSelfieMatchingEnabled(galleryRes.gallery.selfieMatchingEnabled ?? true);
             // Initialize edit fields
             setEditName(galleryRes.gallery.name);
             setEditDescription(galleryRes.gallery.description || '');
@@ -377,6 +379,19 @@ export default function GalleryDetailPage() {
                                                         <SelectItem value="LOCKED">Locked (frozen)</SelectItem>
                                                     </SelectContent>
                                                 </Select>
+                                            </div>
+                                            <div className="flex items-center justify-between">
+                                                <div>
+                                                    <Label>Selfie Photo Matching</Label>
+                                                    <p className="text-xs text-muted-foreground">Allow guests to find photos using a selfie (uses AI)</p>
+                                                </div>
+                                                <Switch
+                                                    checked={selfieMatchingEnabled}
+                                                    onCheckedChange={(checked) => {
+                                                        setSelfieMatchingEnabled(checked);
+                                                        handleSettingUpdate({ selfieMatchingEnabled: checked });
+                                                    }}
+                                                />
                                             </div>
                                             <div className="pt-4 border-t">
                                                 <Button variant="destructive" onClick={handleDelete} className="w-full">Delete Gallery</Button>

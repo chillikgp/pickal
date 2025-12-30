@@ -45,6 +45,51 @@ const accessGallerySchema = z.object({
     clientName: z.string().optional(),
     clientEmail: z.string().email().optional(),
 });
+// ============================================================================
+// PUBLIC ENDPOINTS (No authentication required)
+// ============================================================================
+
+/**
+ * GET /api/galleries/:id/public-config
+ * Public endpoint to get gallery feature flags for guest access page.
+ * Returns only safe, non-sensitive configuration.
+ * 
+ * This endpoint is INTENTIONALLY unauthenticated.
+ */
+router.get('/:id/public-config', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+        const { id } = req.params;
+
+        const gallery = await prisma.gallery.findUnique({
+            where: { id },
+            select: {
+                id: true,
+                selfieMatchingEnabled: true,
+                downloadsEnabled: true,
+                accessModes: true,
+            },
+        });
+
+        if (!gallery) {
+            throw notFound('Gallery not found');
+        }
+
+        console.log(`[PUBLIC] Config request for gallery ${id}: selfieMatchingEnabled=${gallery.selfieMatchingEnabled}`);
+
+        res.json({
+            galleryId: gallery.id,
+            selfieMatchingEnabled: gallery.selfieMatchingEnabled,
+            downloadsEnabled: gallery.downloadsEnabled,
+            accessModes: gallery.accessModes,
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+// ============================================================================
+// AUTHENTICATED ENDPOINTS
+// ============================================================================
 
 /**
  * GET /api/galleries

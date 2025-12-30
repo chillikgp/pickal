@@ -34,6 +34,24 @@ export default function GalleryAccessPage() {
     const [progress, setProgress] = useState(0);
     const [galleryName, setGalleryName] = useState('Gallery');
 
+    // Gallery config (fetched on mount)
+    const [configLoading, setConfigLoading] = useState(true);
+    const [selfieMatchingEnabled, setSelfieMatchingEnabled] = useState(true);
+
+    // Fetch gallery config on mount
+    useEffect(() => {
+        galleryApi.getPublicConfig(galleryId)
+            .then((config) => {
+                setSelfieMatchingEnabled(config.selfieMatchingEnabled);
+            })
+            .catch((error) => {
+                console.error('Failed to fetch gallery config:', error);
+                // Default to disabled on error (safe fallback)
+                setSelfieMatchingEnabled(false);
+            })
+            .finally(() => setConfigLoading(false));
+    }, [galleryId]);
+
     // Simulate progress during processing
     useEffect(() => {
         if (screen === 'processing') {
@@ -135,27 +153,37 @@ export default function GalleryAccessPage() {
                     Choose an option below to securely view your photos from the event.
                 </p>
 
-                {/* Primary CTA - Selfie */}
-                <button
-                    onClick={() => setScreen('selfie')}
-                    className="w-full bg-[#8B1538] hover:bg-[#7a1230] text-white rounded-xl py-4 px-6 flex items-center justify-center gap-3 transition-colors mb-3"
-                >
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                    </svg>
-                    <span className="font-semibold">Find my photos using a selfie</span>
-                </button>
-                <p className="text-center text-gray-500 text-sm mb-6">
-                    The fastest way. We use facial recognition to find only your photos.
-                </p>
+                {/* Primary CTA - Selfie (only shown if enabled) */}
+                {selfieMatchingEnabled ? (
+                    <>
+                        <button
+                            onClick={() => setScreen('selfie')}
+                            className="w-full bg-[#8B1538] hover:bg-[#7a1230] text-white rounded-xl py-4 px-6 flex items-center justify-center gap-3 transition-colors mb-3"
+                        >
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                            </svg>
+                            <span className="font-semibold">Find my photos using a selfie</span>
+                        </button>
+                        <p className="text-center text-gray-500 text-sm mb-6">
+                            The fastest way. We use facial recognition to find only your photos.
+                        </p>
 
-                {/* Divider */}
-                <div className="flex items-center gap-4 mb-6">
-                    <div className="flex-1 h-px bg-gray-200"></div>
-                    <span className="text-gray-400 text-sm">OR</span>
-                    <div className="flex-1 h-px bg-gray-200"></div>
-                </div>
+                        {/* Divider */}
+                        <div className="flex items-center gap-4 mb-6">
+                            <div className="flex-1 h-px bg-gray-200"></div>
+                            <span className="text-gray-400 text-sm">OR</span>
+                            <div className="flex-1 h-px bg-gray-200"></div>
+                        </div>
+                    </>
+                ) : (
+                    <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 mb-6 text-center">
+                        <p className="text-gray-500 text-sm">
+                            Selfie matching is not available for this gallery.
+                        </p>
+                    </div>
+                )}
 
                 {/* Secondary CTA - Private Key */}
                 <button
