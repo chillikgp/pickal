@@ -9,6 +9,7 @@ interface AuthContextType {
     login: (email: string, password: string) => Promise<void>;
     register: (email: string, password: string, name: string, businessName?: string) => Promise<void>;
     logout: () => void;
+    refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -49,8 +50,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setPhotographer(null);
     };
 
+    const refreshUser = async () => {
+        try {
+            const { photographer } = await authApi.me();
+            setPhotographer(photographer);
+        } catch {
+            // Ignore errors during refresh
+        }
+    };
+
     return (
-        <AuthContext.Provider value={{ photographer, isLoading, login, register, logout }}>
+        <AuthContext.Provider value={{ photographer, isLoading, login, register, logout, refreshUser }}>
             {children}
         </AuthContext.Provider>
     );

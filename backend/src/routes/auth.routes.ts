@@ -29,6 +29,12 @@ const loginSchema = z.object({
     password: z.string(),
 });
 
+const updateProfileSchema = z.object({
+    name: z.string().min(1).optional(),
+    businessName: z.string().optional(),
+    logoUrl: z.string().url().optional().nullable(),
+});
+
 // Helper to generate JWT
 function generateToken(photographer: { id: string; email: string }): string {
     const payload: JwtPayload = {
@@ -76,6 +82,7 @@ router.post('/register', async (req: Request, res: Response, next: NextFunction)
                 email: true,
                 name: true,
                 businessName: true,
+                logoUrl: true,
                 createdAt: true,
             },
         });
@@ -129,6 +136,7 @@ router.post('/login', async (req: Request, res: Response, next: NextFunction) =>
                 email: photographer.email,
                 name: photographer.name,
                 businessName: photographer.businessName,
+                logoUrl: photographer.logoUrl,
             },
             token,
         });
@@ -154,6 +162,7 @@ router.get('/me', requirePhotographer, async (req: AuthenticatedRequest, res: Re
                 email: true,
                 name: true,
                 businessName: true,
+                logoUrl: true,
                 createdAt: true,
                 _count: {
                     select: { galleries: true },
@@ -164,6 +173,41 @@ router.get('/me', requirePhotographer, async (req: AuthenticatedRequest, res: Re
         res.json({ photographer });
     } catch (error) {
         next(error);
+    }
+});
+
+/**
+ * PATCH /api/auth/profile
+ * Update photographer profile (name, businessName, logoUrl)
+ */
+router.patch('/profile', requirePhotographer, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+        const data = updateProfileSchema.parse(req.body);
+
+        const photographer = await prisma.photographer.update({
+            where: { id: req.photographer!.id },
+            data: {
+                name: data.name,
+                businessName: data.businessName,
+                logoUrl: data.logoUrl,
+            },
+            select: {
+                id: true,
+                email: true,
+                name: true,
+                businessName: true,
+                logoUrl: true,
+                createdAt: true,
+            },
+        });
+
+        res.json({ photographer });
+    } catch (error) {
+        if (error instanceof z.ZodError) {
+            next(badRequest(error.errors[0].message));
+        } else {
+            next(error);
+        }
     }
 });
 

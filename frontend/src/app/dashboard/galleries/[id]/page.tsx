@@ -39,6 +39,12 @@ export default function GalleryDetailPage() {
     const [downloadResolution, setDownloadResolution] = useState<'web' | 'original'>('web');
     const [selectionState, setSelectionState] = useState<'DISABLED' | 'OPEN' | 'LOCKED'>('DISABLED');
 
+    // Edit details state
+    const [editName, setEditName] = useState('');
+    const [editDescription, setEditDescription] = useState('');
+    const [editEventDate, setEditEventDate] = useState('');
+    const [isSavingDetails, setIsSavingDetails] = useState(false);
+
     const loadGallery = useCallback(async () => {
         try {
             const [galleryRes, photosRes] = await Promise.all([
@@ -51,6 +57,10 @@ export default function GalleryDetailPage() {
             setDownloadsEnabled(galleryRes.gallery.downloadsEnabled);
             setDownloadResolution(galleryRes.gallery.downloadResolution);
             setSelectionState(galleryRes.gallery.selectionState);
+            // Initialize edit fields
+            setEditName(galleryRes.gallery.name);
+            setEditDescription(galleryRes.gallery.description || '');
+            setEditEventDate(galleryRes.gallery.eventDate ? galleryRes.gallery.eventDate.split('T')[0] : '');
         } catch (error) {
             toast.error('Failed to load gallery');
             router.push('/dashboard');
@@ -170,6 +180,34 @@ export default function GalleryDetailPage() {
         }
     };
 
+    const handleSaveDetails = async () => {
+        if (!editName.trim()) {
+            toast.error('Event name is required');
+            return;
+        }
+
+        setIsSavingDetails(true);
+        try {
+            // Convert date to ISO 8601 datetime format (backend expects z.string().datetime())
+            const formattedEventDate = editEventDate
+                ? new Date(editEventDate).toISOString()
+                : undefined;
+
+            const updates: Partial<Gallery> = {
+                name: editName.trim(),
+                description: editDescription.trim() || undefined,
+                eventDate: formattedEventDate,
+            };
+            await galleryApi.update(galleryId, updates);
+            setGallery(prev => prev ? { ...prev, ...updates } : null);
+            toast.success('Details updated');
+        } catch (error) {
+            toast.error('Failed to update details');
+        } finally {
+            setIsSavingDetails(false);
+        }
+    };
+
     const handleDelete = async () => {
         if (!confirm('Are you sure you want to delete this gallery? This cannot be undone.')) return;
 
@@ -238,11 +276,48 @@ export default function GalleryDetailPage() {
                                     <DialogHeader>
                                         <DialogTitle>Gallery Settings</DialogTitle>
                                     </DialogHeader>
-                                    <Tabs defaultValue="access">
+                                    <Tabs defaultValue="details">
                                         <TabsList className="w-full">
+                                            <TabsTrigger value="details" className="flex-1">Details</TabsTrigger>
                                             <TabsTrigger value="access" className="flex-1">Access</TabsTrigger>
                                             <TabsTrigger value="features" className="flex-1">Features</TabsTrigger>
                                         </TabsList>
+                                        <TabsContent value="details" className="space-y-4 pt-4">
+                                            <div className="space-y-2">
+                                                <Label htmlFor="edit-name">Event Name *</Label>
+                                                <Input
+                                                    id="edit-name"
+                                                    value={editName}
+                                                    onChange={(e) => setEditName(e.target.value)}
+                                                    placeholder="e.g., Wedding, Birthday Shoot"
+                                                />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label htmlFor="edit-description">Description</Label>
+                                                <Input
+                                                    id="edit-description"
+                                                    value={editDescription}
+                                                    onChange={(e) => setEditDescription(e.target.value)}
+                                                    placeholder="e.g., Baby Ivaan's First Birthday"
+                                                />
+                                            </div>
+                                            <div className="space-y-2">
+                                                <Label htmlFor="edit-date">Event Date</Label>
+                                                <Input
+                                                    id="edit-date"
+                                                    type="date"
+                                                    value={editEventDate}
+                                                    onChange={(e) => setEditEventDate(e.target.value)}
+                                                />
+                                            </div>
+                                            <Button
+                                                onClick={handleSaveDetails}
+                                                disabled={isSavingDetails || !editName.trim()}
+                                                className="w-full"
+                                            >
+                                                {isSavingDetails ? 'Saving...' : 'Save Details'}
+                                            </Button>
+                                        </TabsContent>
                                         <TabsContent value="access" className="space-y-4 pt-4">
                                             <div className="space-y-2">
                                                 <Label>Private Key</Label>
@@ -313,7 +388,7 @@ export default function GalleryDetailPage() {
                         </div>
                     </div>
                 </div>
-            </header>
+            </header >
 
             <main className="container mx-auto px-4 py-8">
                 {/* Stats */}
@@ -535,6 +610,6 @@ export default function GalleryDetailPage() {
                     )}
                 </DialogContent>
             </Dialog>
-        </div>
+        </div >
     );
 }

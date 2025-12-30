@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
+import { GalleryHeader } from '@/components/GalleryHeader';
 
 export default function ClientGalleryPage() {
     const params = useParams();
@@ -386,8 +387,8 @@ export default function ClientGalleryPage() {
     const canDownload = gallery.downloadsEnabled;
     const canComment = !isGuest && gallery.commentsEnabled !== false;
 
-    // Get cover photo (fallback to first photo)
-    const coverPhoto = gallery.coverPhoto || (photos.length > 0 ? photos[0] : null);
+    // Get cover photo - only if explicitly set by photographer (no fallback)
+    const coverPhoto = gallery.coverPhoto || null;
     const eventDateFormatted = gallery.eventDate
         ? new Date(gallery.eventDate).toLocaleDateString('en-US', {
             month: 'long',
@@ -402,10 +403,10 @@ export default function ClientGalleryPage() {
 
     return (
         <div className="min-h-screen bg-background">
-            {/* Hero Section */}
-            <section className="relative h-[70vh] md:h-[80vh] w-full overflow-hidden">
-                {/* Cover Photo Background */}
-                {coverPhoto ? (
+            {/* Hero Section - Pixieset-style full-screen layout */}
+            {coverPhoto && (
+                <section className="relative h-screen w-full overflow-hidden">
+                    {/* Cover Photo Background */}
                     <img
                         src={coverPhoto.webUrl || coverPhoto.lqipBase64}
                         alt={gallery.name}
@@ -420,96 +421,73 @@ export default function ClientGalleryPage() {
                                 : 'center',
                         }}
                     />
-                ) : (
-                    <div className="absolute inset-0 bg-gradient-to-br from-gray-800 to-gray-900" />
-                )}
 
-                {/* Dark Gradient Overlay */}
-                <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/30 to-black/20" />
+                    {/* Dark Gradient Overlay - subtle top to bottom */}
+                    <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-black/30 to-black/60" />
 
-                {/* Hero Content */}
-                <div className="absolute inset-0 flex flex-col items-center justify-center text-center text-white px-4">
-                    <h1 className="text-4xl md:text-6xl font-bold tracking-tight mb-3 drop-shadow-lg">
-                        {gallery.name}
-                    </h1>
-                    {eventDateFormatted && (
-                        <p className="text-sm md:text-base tracking-widest text-white/80 mb-8">
-                            {eventDateFormatted}
-                        </p>
-                    )}
-                    <button
-                        onClick={scrollToGallery}
-                        className="px-8 py-3 bg-white/20 backdrop-blur-sm border border-white/40 rounded-full text-white font-medium text-sm uppercase tracking-wider hover:bg-white/30 transition-all"
-                    >
-                        View Gallery
-                    </button>
-                </div>
-            </section>
-
-            {/* Metadata Bar */}
-            <div className="border-b bg-white">
-                <div className="container mx-auto px-4 py-6">
-                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-                        {/* Left: Gallery Info */}
-                        <div>
-                            <h2 className="text-xl font-bold text-gray-900">{gallery.name}</h2>
-                            {gallery.description && (
-                                <p className="text-sm text-gray-600 mt-1 max-w-xl">{gallery.description}</p>
-                            )}
-                        </div>
-
-                        {/* Right: Action CTAs */}
-                        <div className="flex items-center gap-3 flex-wrap">
-                            {/* Slideshow */}
-                            {photos.length > 0 && (
-                                <button
-                                    onClick={() => startSlideshow(0, 'grid')}
-                                    className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
-                                >
-                                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M8 5v14l11-7z" />
-                                    </svg>
-                                    Slideshow
-                                </button>
-                            )}
-
-                            {/* Download All (if enabled) */}
-                            {canDownload && (
-                                <button
-                                    onClick={() => toast.info('Download All feature coming soon!')}
-                                    className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
-                                >
-                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                    </svg>
-                                    Download All
-                                </button>
-                            )}
-
-                            {/* See Favorites */}
-                            {canSelect && (
-                                <button
-                                    onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
-                                    className={`flex items-center gap-2 px-4 py-2 text-sm rounded-lg transition-colors ${showFavoritesOnly
-                                        ? 'bg-rose-50 text-rose-600'
-                                        : 'text-gray-700 hover:text-gray-900 hover:bg-gray-100'
-                                        }`}
-                                >
-                                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill={showFavoritesOnly ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={showFavoritesOnly ? 0 : 1.5}>
-                                        <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
-                                    </svg>
-                                    {showFavoritesOnly ? `Favorites (${selectedIds.size})` : 'Favorites'}
-                                </button>
-                            )}
-
-                            {/* Selection Count Badge */}
-                            {canSelect && selectedIds.size > 0 && !showFavoritesOnly && (
-                                <Badge variant="default">{selectedIds.size} selected</Badge>
-                            )}
-                        </div>
+                    {/* Hero Content - Centered */}
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-center text-white px-4">
+                        <h1 className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-normal md:font-medium tracking-wide mb-2 drop-shadow-lg">
+                            {gallery.name}
+                        </h1>
+                        {eventDateFormatted && (
+                            <p className="text-xs sm:text-sm tracking-[0.2em] text-white/70 mb-8 font-light">
+                                {eventDateFormatted}
+                            </p>
+                        )}
+                        <button
+                            onClick={scrollToGallery}
+                            className="px-6 py-2.5 bg-transparent border border-white/60 rounded-sm text-white font-light text-xs sm:text-sm uppercase tracking-[0.15em] hover:bg-white/10 transition-all"
+                        >
+                            View Gallery
+                        </button>
                     </div>
-                </div>
-            </div>
+
+                    {/* Studio Branding - Bottom Center */}
+                    {gallery.photographer && (
+                        <div className="absolute bottom-8 left-0 right-0 flex flex-col items-center text-white/80">
+                            {/* Studio Logo or Initials */}
+                            {gallery.photographer.logoUrl ? (
+                                <img
+                                    src={gallery.photographer.logoUrl}
+                                    alt={gallery.photographer.businessName || gallery.photographer.name}
+                                    className="w-12 h-12 rounded-full object-cover mb-2 border border-white/20"
+                                />
+                            ) : (
+                                <div className="w-12 h-12 rounded-full bg-white/10 backdrop-blur-sm border border-white/20 flex items-center justify-center mb-2">
+                                    <span className="text-sm font-medium text-white/80">
+                                        {(gallery.photographer.businessName || gallery.photographer.name)
+                                            .split(' ')
+                                            .map(word => word[0])
+                                            .join('')
+                                            .slice(0, 2)
+                                            .toUpperCase()}
+                                    </span>
+                                </div>
+                            )}
+                            {/* Studio Name */}
+                            <span className="text-xs tracking-[0.15em] uppercase font-light">
+                                {gallery.photographer.businessName || gallery.photographer.name}
+                            </span>
+                        </div>
+                    )}
+                </section>
+            )}
+
+            {/* Gallery Header - Event Info, Sections, CTAs */}
+            <GalleryHeader
+                gallery={gallery}
+                sections={sections}
+                photos={photos}
+                activeSection={activeSection}
+                setActiveSection={setActiveSection}
+                selectedIds={selectedIds}
+                showFavoritesOnly={showFavoritesOnly}
+                setShowFavoritesOnly={setShowFavoritesOnly}
+                onStartSlideshow={() => startSlideshow(0, 'grid')}
+                canDownload={canDownload}
+                canSelect={canSelect}
+            />
 
             {/* Guest Selfie Card - Shown if guest uploaded a selfie */}
             {guestSelfiePreview && (
@@ -577,52 +555,6 @@ export default function ClientGalleryPage() {
             )}
 
             <main ref={galleryGridRef} className="container mx-auto px-4 py-8">
-                {/* Section Tabs */}
-                {sections.length > 0 && (
-                    <div className="mb-8">
-                        {/* Mobile View: Horizontal Scroll */}
-                        <div className="md:hidden flex items-center gap-6 overflow-x-auto pb-2 scrollbar-hide -mx-4 px-4">
-                            <button
-                                onClick={() => setActiveSection('all')}
-                                className={`flex-shrink-0 text-sm font-medium uppercase tracking-wide transition-colors ${activeSection === 'all' ? 'text-foreground border-b-2 border-foreground -mb-[10px] pb-2' : 'text-muted-foreground pb-2'
-                                    }`}
-                            >
-                                All Photos <span className="text-xs opacity-70 ml-1">{photos.length}</span>
-                            </button>
-                            {sections.map(section => (
-                                <button
-                                    key={section.id}
-                                    onClick={() => setActiveSection(section.id)}
-                                    className={`flex-shrink-0 text-sm font-medium uppercase tracking-wide transition-colors ${activeSection === section.id ? 'text-foreground border-b-2 border-foreground -mb-[10px] pb-2' : 'text-muted-foreground pb-2'
-                                        }`}
-                                >
-                                    {section.name} <span className="text-xs opacity-70 ml-1">{photos.filter(p => p.sectionId === section.id).length}</span>
-                                </button>
-                            ))}
-                        </div>
-
-                        {/* Desktop View: Fixed List + Dropdown */}
-                        <div className="hidden md:flex items-center gap-8 border-b pb-4 mb-2 overflow-x-auto scrollbar-hide">
-                            <button
-                                onClick={() => setActiveSection('all')}
-                                className={`flex-shrink-0 text-sm font-medium uppercase tracking-wide transition-colors hover:text-foreground ${activeSection === 'all' ? 'text-foreground' : 'text-muted-foreground'
-                                    }`}
-                            >
-                                All Photos <span className="text-xs opacity-70 ml-1">{photos.length}</span>
-                            </button>
-                            {sections.map(section => (
-                                <button
-                                    key={section.id}
-                                    onClick={() => setActiveSection(section.id)}
-                                    className={`flex-shrink-0 text-sm font-medium uppercase tracking-wide transition-colors hover:text-foreground ${activeSection === section.id ? 'text-foreground' : 'text-muted-foreground'
-                                        }`}
-                                >
-                                    {section.name} <span className="text-xs opacity-70 ml-1">{photos.filter(p => p.sectionId === section.id).length}</span>
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-                )}
 
                 {/* Photo Grid */}
                 {filteredPhotos.length === 0 ? (
@@ -1053,17 +985,6 @@ export default function ClientGalleryPage() {
                 </DialogContent>
             </Dialog>
 
-            {/* Selection Bar */}
-            {canSelect && selectedIds.size > 0 && (
-                <div className="fixed bottom-0 left-0 right-0 bg-background border-t p-4 z-20">
-                    <div className="container mx-auto flex items-center justify-between">
-                        <span className="font-semibold">{selectedIds.size} photos selected</span>
-                        <Button variant="secondary" onClick={() => setSelectedIds(new Set())}>
-                            Clear Selection
-                        </Button>
-                    </div>
-                </div>
-            )}
         </div>
     );
 }

@@ -4,18 +4,28 @@ import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth-context';
-import { galleryApi, Gallery } from '@/lib/api';
+import { galleryApi, authApi, Gallery } from '@/lib/api';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from '@/components/ui/dialog';
 import { toast } from 'sonner';
 
 export default function DashboardPage() {
-    const { photographer, isLoading: authLoading, logout } = useAuth();
+    const { photographer, isLoading: authLoading, logout, refreshUser } = useAuth();
     const [galleries, setGalleries] = useState<Gallery[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const router = useRouter();
+
+    // Settings dialog state
+    const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+    const [editName, setEditName] = useState('');
+    const [editBusinessName, setEditBusinessName] = useState('');
+    const [editLogoUrl, setEditLogoUrl] = useState('');
+    const [isSaving, setIsSaving] = useState(false);
 
     useEffect(() => {
         if (!authLoading && !photographer) {
@@ -29,8 +39,37 @@ export default function DashboardPage() {
                 .then(({ galleries }) => setGalleries(galleries))
                 .catch((error) => toast.error(error.message))
                 .finally(() => setIsLoading(false));
+
+            // Initialize settings form
+            setEditName(photographer.name);
+            setEditBusinessName(photographer.businessName || '');
+            setEditLogoUrl(photographer.logoUrl || '');
         }
     }, [photographer]);
+
+    const handleSaveSettings = async () => {
+        if (!editName.trim()) {
+            toast.error('Name is required');
+            return;
+        }
+
+        setIsSaving(true);
+        try {
+            await authApi.updateProfile({
+                name: editName.trim(),
+                businessName: editBusinessName.trim() || undefined,
+                logoUrl: editLogoUrl.trim() || null,
+            });
+            toast.success('Branding updated');
+            setIsSettingsOpen(false);
+            // Refresh user data
+            refreshUser();
+        } catch (error: any) {
+            toast.error(error.message || 'Failed to update branding');
+        } finally {
+            setIsSaving(false);
+        }
+    };
 
     if (authLoading || !photographer) {
         return (
@@ -52,6 +91,89 @@ export default function DashboardPage() {
                         </p>
                     </div>
                     <div className="flex items-center gap-2">
+                        <Dialog open={isSettingsOpen} onOpenChange={setIsSettingsOpen}>
+                            <DialogTrigger asChild>
+                                <Button variant="outline">Branding</Button>
+                            </DialogTrigger>
+                            <DialogContent>
+                                <DialogHeader>
+                                    <DialogTitle>Studio Branding</DialogTitle>
+                                </DialogHeader>
+                                <div className="space-y-4 py-4">
+                                    <div className="space-y-2">
+                                        <Label htmlFor="edit-name">Your Name *</Label>
+                                        <Input
+                                            id="edit-name"
+                                            value={editName}
+                                            onChange={(e) => setEditName(e.target.value)}
+                                            placeholder="John Doe"
+                                        />
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label htmlFor="edit-business">Studio / Business Name</Label>
+                                        <Input
+                                            id="edit-business"
+                                            value={editBusinessName}
+                                            onChange={(e) => setEditBusinessName(e.target.value)}
+                                            placeholder="Doe Photography"
+                                        />
+                                        <p className="text-xs text-muted-foreground">
+                                            This appears on client gallery pages
+                                        </p>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label htmlFor="edit-logo">Logo URL</Label>
+                                        <Input
+                                            id="edit-logo"
+                                            value={editLogoUrl}
+                                            onChange={(e) => setEditLogoUrl(e.target.value)}
+                                            placeholder="https://..."
+                                        />
+                                        <p className="text-xs text-muted-foreground">
+                                            Direct link to your logo image (will appear as a circle)
+                                        </p>
+                                    </div>
+                                    {/* Preview */}
+                                    {(editLogoUrl || editBusinessName || editName) && (
+                                        <div className="border rounded-lg p-4 bg-gray-900 flex flex-col items-center">
+                                            <p className="text-xs text-gray-400 mb-2">Preview</p>
+                                            {editLogoUrl ? (
+                                                <img
+                                                    src={editLogoUrl}
+                                                    alt="Logo preview"
+                                                    className="w-12 h-12 rounded-full object-cover mb-2 border border-white/20"
+                                                    onError={(e) => {
+                                                        (e.target as HTMLImageElement).style.display = 'none';
+                                                    }}
+                                                />
+                                            ) : (
+                                                <div className="w-12 h-12 rounded-full bg-white/10 border border-white/20 flex items-center justify-center mb-2">
+                                                    <span className="text-sm font-medium text-white/80">
+                                                        {(editBusinessName || editName)
+                                                            .split(' ')
+                                                            .map(word => word[0])
+                                                            .join('')
+                                                            .slice(0, 2)
+                                                            .toUpperCase()}
+                                                    </span>
+                                                </div>
+                                            )}
+                                            <span className="text-xs tracking-wide uppercase text-white/70">
+                                                {editBusinessName || editName}
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
+                                <DialogFooter>
+                                    <Button variant="outline" onClick={() => setIsSettingsOpen(false)}>
+                                        Cancel
+                                    </Button>
+                                    <Button onClick={handleSaveSettings} disabled={isSaving || !editName.trim()}>
+                                        {isSaving ? 'Saving...' : 'Save Branding'}
+                                    </Button>
+                                </DialogFooter>
+                            </DialogContent>
+                        </Dialog>
                         <Button variant="outline" asChild>
                             <Link href="/dashboard/print-requests">Print Requests</Link>
                         </Button>

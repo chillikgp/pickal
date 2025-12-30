@@ -106,6 +106,7 @@ export interface Photographer {
     email: string;
     name: string;
     businessName?: string;
+    logoUrl?: string;
     createdAt: string;
 }
 
@@ -122,6 +123,9 @@ export const authApi = {
         apiRequest<AuthResponse>('/api/auth/login', { method: 'POST', body: data, useAuth: false }),
 
     me: () => apiRequest<{ photographer: Photographer }>('/api/auth/me'),
+
+    updateProfile: (data: { name?: string; businessName?: string; logoUrl?: string | null }) =>
+        apiRequest<{ photographer: Photographer }>('/api/auth/profile', { method: 'PATCH', body: data }),
 };
 
 // ============================================================================
@@ -140,6 +144,12 @@ export interface Gallery {
     commentsEnabled: boolean;
     coverPhotoId?: string | null;
     coverPhoto?: Photo;
+    photographer?: {
+        id: string;
+        name: string;
+        businessName?: string;
+        logoUrl?: string;
+    };
     createdAt: string;
     updatedAt: string;
     sections?: Section[];

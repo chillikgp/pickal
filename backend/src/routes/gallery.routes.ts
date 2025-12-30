@@ -137,6 +137,14 @@ router.get('/:id', requireAnyAuth, async (req: AuthenticatedRequest, res: Respon
                 sections: {
                     orderBy: { sortOrder: 'asc' },
                 },
+                photographer: {
+                    select: {
+                        id: true,
+                        name: true,
+                        businessName: true,
+                        logoUrl: true,
+                    },
+                },
                 _count: {
                     select: {
                         photos: true,
