@@ -430,6 +430,15 @@ export default function GalleryDetailPage() {
                                         <Skeleton className="w-full h-full" />
                                     )}
 
+                                    {/* Cover Photo Indicator */}
+                                    {gallery.coverPhotoId === photo.id && (
+                                        <div className="absolute top-2 left-2 z-10">
+                                            <Badge variant="secondary" className="shadow-md bg-yellow-500 text-white border-0">
+                                                ★ Cover
+                                            </Badge>
+                                        </div>
+                                    )}
+
                                     {/* Persistent Selection Indicator */}
                                     {selectionCount > 0 && (
                                         <div className="absolute top-2 right-2 z-10">
@@ -477,7 +486,22 @@ export default function GalleryDetailPage() {
                                 />
                             </div>
 
-                            <div className="flex gap-2">
+                            <div className="flex gap-2 flex-wrap">
+                                <Button
+                                    variant={gallery.coverPhotoId === selectedPhoto.id ? "default" : "outline"}
+                                    onClick={async () => {
+                                        try {
+                                            const newCoverId = gallery.coverPhotoId === selectedPhoto.id ? undefined : selectedPhoto.id;
+                                            await galleryApi.update(galleryId, { coverPhotoId: newCoverId || null });
+                                            setGallery({ ...gallery, coverPhotoId: newCoverId });
+                                            toast.success(newCoverId ? 'Cover photo set' : 'Cover photo removed');
+                                        } catch (error) {
+                                            toast.error('Failed to update cover photo');
+                                        }
+                                    }}
+                                >
+                                    {gallery.coverPhotoId === selectedPhoto.id ? '★ Cover Photo' : '☆ Set as Cover'}
+                                </Button>
                                 <Button variant="destructive" onClick={handleDeletePhoto}>Delete Photo</Button>
                                 <Button variant="outline" asChild>
                                     <a href={selectedPhoto.webUrl} target="_blank" rel="noopener noreferrer">View Original</a>

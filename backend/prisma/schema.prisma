@@ -59,6 +59,9 @@ model Gallery {
   selectionState      SelectionState @default(DISABLED)
   commentsEnabled     Boolean       @default(true)
   
+  // Cover photo for hero section
+  coverPhotoId        String?
+  
   // Ownership
   photographerId String
   photographer   Photographer      @relation(fields: [photographerId], references: [id], onDelete: Cascade)

@@ -17,7 +17,7 @@ import {
     AuthenticatedRequest
 } from '../middleware/auth.middleware.js';
 import { badRequest, notFound, forbidden } from '../middleware/error.middleware.js';
-import { getFaceRecognitionService } from '../services/index.js';
+import { getFaceRecognitionService, getStorageService } from '../services/index.js';
 
 const router = Router();
 
@@ -36,6 +36,7 @@ const updateGallerySchema = z.object({
     downloadResolution: z.enum(['web', 'original']).optional(),
     selectionState: z.enum(['DISABLED', 'OPEN', 'LOCKED']).optional(),
     commentsEnabled: z.boolean().optional(),
+    coverPhotoId: z.string().uuid().nullable().optional(),
 });
 
 const accessGallerySchema = z.object({
@@ -150,6 +151,30 @@ router.get('/:id', requireAnyAuth, async (req: AuthenticatedRequest, res: Respon
             throw notFound('Gallery not found');
         }
 
+        // Fetch cover photo if set
+        let coverPhoto: any = null;
+        if (gallery.coverPhotoId) {
+            const rawCoverPhoto = await prisma.photo.findUnique({
+                where: { id: gallery.coverPhotoId },
+                select: {
+                    id: true,
+                    filename: true,
+                    webKey: true,
+                    lqipBase64: true,
+                    width: true,
+                    height: true,
+                },
+            });
+
+            if (rawCoverPhoto) {
+                const storageService = getStorageService();
+                coverPhoto = {
+                    ...rawCoverPhoto,
+                    webUrl: await storageService.getSignedUrl(rawCoverPhoto.webKey),
+                };
+            }
+        }
+
         // Check access
         if (req.userRole === 'photographer') {
             // Photographer must own the gallery
@@ -171,6 +196,7 @@ router.get('/:id', requireAnyAuth, async (req: AuthenticatedRequest, res: Respon
         // Remove private key for non-photographer users
         const response = {
             ...gallery,
+            coverPhoto,
             privateKey: req.userRole === 'photographer' ? gallery.privateKey : undefined,
         };
 
@@ -214,6 +240,7 @@ router.patch('/:id', requirePhotographer, async (req: AuthenticatedRequest, res:
                 downloadResolution: data.downloadResolution,
                 selectionState: data.selectionState,
                 commentsEnabled: data.commentsEnabled,
+                coverPhotoId: data.coverPhotoId,
             },
         });
 

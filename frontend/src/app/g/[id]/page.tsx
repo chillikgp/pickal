@@ -49,6 +49,19 @@ export default function ClientGalleryPage() {
     const [isReMatchingSelfie, setIsReMatchingSelfie] = useState(false);
     const selfieInputRef = useRef<HTMLInputElement>(null);
 
+    // Slideshow state
+    const [slideshowActive, setSlideshowActive] = useState(false);
+    const [slideshowIndex, setSlideshowIndex] = useState(0);
+    const [slideshowPaused, setSlideshowPaused] = useState(false);
+    const [slideshowLaunchedFrom, setSlideshowLaunchedFrom] = useState<'grid' | 'canvas'>('grid');
+    const slideshowTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+    // Favorites filter state
+    const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
+
+    // Ref for smooth scroll to gallery
+    const galleryGridRef = useRef<HTMLDivElement>(null);
+
     const loadData = useCallback(async () => {
         const token = getSessionToken();
         if (!token) {
@@ -100,11 +113,122 @@ export default function ClientGalleryPage() {
         }
     }, [selectedPhoto]);
 
-    // Filter photos by section
+    // Filter photos by section and favorites
     const sections = gallery?.sections || [];
-    const filteredPhotos = activeSection === 'all'
+    let filteredPhotos = activeSection === 'all'
         ? photos
         : photos.filter(p => p.sectionId === activeSection);
+
+    // Apply favorites filter if enabled
+    if (showFavoritesOnly) {
+        filteredPhotos = filteredPhotos.filter(p => selectedIds.has(p.id));
+    }
+
+    // Navigation helpers for photo viewer (must be after filteredPhotos)
+    const currentPhotoIndex = selectedPhoto ? filteredPhotos.findIndex(p => p.id === selectedPhoto.id) : -1;
+    const hasPrevPhoto = currentPhotoIndex > 0;
+    const hasNextPhoto = currentPhotoIndex < filteredPhotos.length - 1;
+
+    const goToPrevPhoto = useCallback(() => {
+        if (hasPrevPhoto) {
+            setSelectedPhoto(filteredPhotos[currentPhotoIndex - 1]);
+        }
+    }, [hasPrevPhoto, currentPhotoIndex, filteredPhotos]);
+
+    const goToNextPhoto = useCallback(() => {
+        if (hasNextPhoto) {
+            setSelectedPhoto(filteredPhotos[currentPhotoIndex + 1]);
+        }
+    }, [hasNextPhoto, currentPhotoIndex, filteredPhotos]);
+
+    // Keyboard navigation for photo viewer
+    useEffect(() => {
+        if (!selectedPhoto) return;
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'ArrowLeft') {
+                goToPrevPhoto();
+            } else if (e.key === 'ArrowRight') {
+                goToNextPhoto();
+            } else if (e.key === 'Escape') {
+                setSelectedPhoto(null);
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [selectedPhoto, goToPrevPhoto, goToNextPhoto]);
+
+    // Slideshow controls
+    const startSlideshow = useCallback((fromIndex: number, launchedFrom: 'grid' | 'canvas') => {
+        setSlideshowIndex(fromIndex);
+        setSlideshowLaunchedFrom(launchedFrom);
+        setSlideshowPaused(false);
+        setSlideshowActive(true);
+    }, []);
+
+    const closeSlideshow = useCallback(() => {
+        setSlideshowActive(false);
+        if (slideshowTimerRef.current) {
+            clearInterval(slideshowTimerRef.current);
+            slideshowTimerRef.current = null;
+        }
+        // Return to previous view
+        if (slideshowLaunchedFrom === 'canvas' && filteredPhotos[slideshowIndex]) {
+            setSelectedPhoto(filteredPhotos[slideshowIndex]);
+        }
+    }, [slideshowLaunchedFrom, slideshowIndex, filteredPhotos]);
+
+    const slideshowGoNext = useCallback(() => {
+        setSlideshowIndex((prev) => (prev + 1) % filteredPhotos.length);
+    }, [filteredPhotos.length]);
+
+    const slideshowGoPrev = useCallback(() => {
+        setSlideshowIndex((prev) => (prev - 1 + filteredPhotos.length) % filteredPhotos.length);
+    }, [filteredPhotos.length]);
+
+    // Slideshow autoplay effect
+    useEffect(() => {
+        if (!slideshowActive || slideshowPaused || filteredPhotos.length === 0) {
+            if (slideshowTimerRef.current) {
+                clearInterval(slideshowTimerRef.current);
+                slideshowTimerRef.current = null;
+            }
+            return;
+        }
+
+        slideshowTimerRef.current = setInterval(() => {
+            setSlideshowIndex((prev) => (prev + 1) % filteredPhotos.length);
+        }, 4000); // 4 seconds per photo
+
+        return () => {
+            if (slideshowTimerRef.current) {
+                clearInterval(slideshowTimerRef.current);
+                slideshowTimerRef.current = null;
+            }
+        };
+    }, [slideshowActive, slideshowPaused, filteredPhotos.length]);
+
+    // Slideshow keyboard controls
+    useEffect(() => {
+        if (!slideshowActive) return;
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                closeSlideshow();
+            } else if (e.key === ' ' || e.code === 'Space') {
+                e.preventDefault();
+                setSlideshowPaused((prev) => !prev);
+            } else if (e.key === 'ArrowLeft') {
+                slideshowGoPrev();
+            } else if (e.key === 'ArrowRight') {
+                slideshowGoNext();
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [slideshowActive, closeSlideshow, slideshowGoNext, slideshowGoPrev]);
 
     const toggleSelection = async (photoId: string) => {
         if (!gallery || gallery.selectionState !== 'OPEN') {
@@ -262,29 +386,130 @@ export default function ClientGalleryPage() {
     const canDownload = gallery.downloadsEnabled;
     const canComment = !isGuest && gallery.commentsEnabled !== false;
 
+    // Get cover photo (fallback to first photo)
+    const coverPhoto = gallery.coverPhoto || (photos.length > 0 ? photos[0] : null);
+    const eventDateFormatted = gallery.eventDate
+        ? new Date(gallery.eventDate).toLocaleDateString('en-US', {
+            month: 'long',
+            day: 'numeric',
+            year: 'numeric'
+        }).toUpperCase()
+        : null;
+
+    const scrollToGallery = () => {
+        galleryGridRef.current?.scrollIntoView({ behavior: 'smooth' });
+    };
+
     return (
         <div className="min-h-screen bg-background">
-            {/* Header */}
-            <header className="border-b sticky top-0 bg-background z-10">
-                <div className="container mx-auto px-4 py-4">
-                    <div className="flex items-center justify-between">
+            {/* Hero Section */}
+            <section className="relative h-[70vh] md:h-[80vh] w-full overflow-hidden">
+                {/* Cover Photo Background */}
+                {coverPhoto ? (
+                    <img
+                        src={coverPhoto.webUrl || coverPhoto.lqipBase64}
+                        alt={gallery.name}
+                        className="absolute inset-0 w-full h-full object-cover"
+                        style={{
+                            backgroundImage: coverPhoto.lqipBase64 ? `url(${coverPhoto.lqipBase64})` : undefined,
+                            backgroundSize: 'cover',
+                            // Portrait photos: align from top to prevent face cropping
+                            // Landscape photos: center normally
+                            objectPosition: (coverPhoto.height && coverPhoto.width && coverPhoto.height > coverPhoto.width)
+                                ? 'top'
+                                : 'center',
+                        }}
+                    />
+                ) : (
+                    <div className="absolute inset-0 bg-gradient-to-br from-gray-800 to-gray-900" />
+                )}
+
+                {/* Dark Gradient Overlay */}
+                <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/30 to-black/20" />
+
+                {/* Hero Content */}
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-center text-white px-4">
+                    <h1 className="text-4xl md:text-6xl font-bold tracking-tight mb-3 drop-shadow-lg">
+                        {gallery.name}
+                    </h1>
+                    {eventDateFormatted && (
+                        <p className="text-sm md:text-base tracking-widest text-white/80 mb-8">
+                            {eventDateFormatted}
+                        </p>
+                    )}
+                    <button
+                        onClick={scrollToGallery}
+                        className="px-8 py-3 bg-white/20 backdrop-blur-sm border border-white/40 rounded-full text-white font-medium text-sm uppercase tracking-wider hover:bg-white/30 transition-all"
+                    >
+                        View Gallery
+                    </button>
+                </div>
+            </section>
+
+            {/* Metadata Bar */}
+            <div className="border-b bg-white">
+                <div className="container mx-auto px-4 py-6">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                        {/* Left: Gallery Info */}
                         <div>
-                            <h1 className="font-bold text-xl">{gallery.name}</h1>
+                            <h2 className="text-xl font-bold text-gray-900">{gallery.name}</h2>
                             {gallery.description && (
-                                <p className="text-sm text-muted-foreground">{gallery.description}</p>
+                                <p className="text-sm text-gray-600 mt-1 max-w-xl">{gallery.description}</p>
                             )}
                         </div>
-                        <div className="flex items-center gap-2">
-                            {canSelect && (
-                                <Badge variant="default">{selectedIds.size} selected</Badge>
+
+                        {/* Right: Action CTAs */}
+                        <div className="flex items-center gap-3 flex-wrap">
+                            {/* Slideshow */}
+                            {photos.length > 0 && (
+                                <button
+                                    onClick={() => startSlideshow(0, 'grid')}
+                                    className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+                                >
+                                    <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M8 5v14l11-7z" />
+                                    </svg>
+                                    Slideshow
+                                </button>
                             )}
+
+                            {/* Download All (if enabled) */}
                             {canDownload && (
-                                <Badge variant="secondary">Downloads enabled</Badge>
+                                <button
+                                    onClick={() => toast.info('Download All feature coming soon!')}
+                                    className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+                                >
+                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                    </svg>
+                                    Download All
+                                </button>
+                            )}
+
+                            {/* See Favorites */}
+                            {canSelect && (
+                                <button
+                                    onClick={() => setShowFavoritesOnly(!showFavoritesOnly)}
+                                    className={`flex items-center gap-2 px-4 py-2 text-sm rounded-lg transition-colors ${showFavoritesOnly
+                                        ? 'bg-rose-50 text-rose-600'
+                                        : 'text-gray-700 hover:text-gray-900 hover:bg-gray-100'
+                                        }`}
+                                >
+                                    <svg className="w-4 h-4" viewBox="0 0 24 24" fill={showFavoritesOnly ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={showFavoritesOnly ? 0 : 1.5}>
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
+                                    </svg>
+                                    {showFavoritesOnly ? `Favorites (${selectedIds.size})` : 'Favorites'}
+                                </button>
+                            )}
+
+                            {/* Selection Count Badge */}
+                            {canSelect && selectedIds.size > 0 && !showFavoritesOnly && (
+                                <Badge variant="default">{selectedIds.size} selected</Badge>
                             )}
                         </div>
                     </div>
                 </div>
-            </header>
+            </div>
 
             {/* Guest Selfie Card - Shown if guest uploaded a selfie */}
             {guestSelfiePreview && (
@@ -351,19 +576,52 @@ export default function ClientGalleryPage() {
                 </div>
             )}
 
-            <main className="container mx-auto px-4 py-8">
+            <main ref={galleryGridRef} className="container mx-auto px-4 py-8">
                 {/* Section Tabs */}
                 {sections.length > 0 && (
-                    <Tabs value={activeSection} onValueChange={setActiveSection} className="mb-6">
-                        <TabsList className="flex-wrap h-auto">
-                            <TabsTrigger value="all">All Photos ({photos.length})</TabsTrigger>
-                            {sections.map((section) => (
-                                <TabsTrigger key={section.id} value={section.id}>
-                                    {section.name} ({photos.filter(p => p.sectionId === section.id).length})
-                                </TabsTrigger>
+                    <div className="mb-8">
+                        {/* Mobile View: Horizontal Scroll */}
+                        <div className="md:hidden flex items-center gap-6 overflow-x-auto pb-2 scrollbar-hide -mx-4 px-4">
+                            <button
+                                onClick={() => setActiveSection('all')}
+                                className={`flex-shrink-0 text-sm font-medium uppercase tracking-wide transition-colors ${activeSection === 'all' ? 'text-foreground border-b-2 border-foreground -mb-[10px] pb-2' : 'text-muted-foreground pb-2'
+                                    }`}
+                            >
+                                All Photos <span className="text-xs opacity-70 ml-1">{photos.length}</span>
+                            </button>
+                            {sections.map(section => (
+                                <button
+                                    key={section.id}
+                                    onClick={() => setActiveSection(section.id)}
+                                    className={`flex-shrink-0 text-sm font-medium uppercase tracking-wide transition-colors ${activeSection === section.id ? 'text-foreground border-b-2 border-foreground -mb-[10px] pb-2' : 'text-muted-foreground pb-2'
+                                        }`}
+                                >
+                                    {section.name} <span className="text-xs opacity-70 ml-1">{photos.filter(p => p.sectionId === section.id).length}</span>
+                                </button>
                             ))}
-                        </TabsList>
-                    </Tabs>
+                        </div>
+
+                        {/* Desktop View: Fixed List + Dropdown */}
+                        <div className="hidden md:flex items-center gap-8 border-b pb-4 mb-2 overflow-x-auto scrollbar-hide">
+                            <button
+                                onClick={() => setActiveSection('all')}
+                                className={`flex-shrink-0 text-sm font-medium uppercase tracking-wide transition-colors hover:text-foreground ${activeSection === 'all' ? 'text-foreground' : 'text-muted-foreground'
+                                    }`}
+                            >
+                                All Photos <span className="text-xs opacity-70 ml-1">{photos.length}</span>
+                            </button>
+                            {sections.map(section => (
+                                <button
+                                    key={section.id}
+                                    onClick={() => setActiveSection(section.id)}
+                                    className={`flex-shrink-0 text-sm font-medium uppercase tracking-wide transition-colors hover:text-foreground ${activeSection === section.id ? 'text-foreground' : 'text-muted-foreground'
+                                        }`}
+                                >
+                                    {section.name} <span className="text-xs opacity-70 ml-1">{photos.filter(p => p.sectionId === section.id).length}</span>
+                                </button>
+                            ))}
+                        </div>
+                    </div>
                 )}
 
                 {/* Photo Grid */}
@@ -371,141 +629,386 @@ export default function ClientGalleryPage() {
                     <Card className="text-center py-12">
                         <CardContent>
                             <div className="space-y-4">
-                                <div className="text-6xl">📷</div>
-                                <h3 className="text-xl font-semibold">No photos found</h3>
+                                <div className="text-6xl">{showFavoritesOnly ? '❤️' : '📷'}</div>
+                                <h3 className="text-xl font-semibold">
+                                    {showFavoritesOnly ? 'No favorites yet' : 'No photos found'}
+                                </h3>
                                 <p className="text-muted-foreground">
-                                    {getSessionToken() ?
-                                        "No photos match your face in this gallery" :
-                                        "This gallery is empty"
+                                    {showFavoritesOnly
+                                        ? "Click the heart icon on photos you love to add them to your favorites"
+                                        : getSessionToken()
+                                            ? "No photos match your face in this gallery"
+                                            : "This gallery is empty"
                                     }
                                 </p>
-                                <Button asChild variant="outline">
-                                    <Link href={`/g/${galleryId}/access`}>Try a different selfie</Link>
-                                </Button>
+                                {showFavoritesOnly ? (
+                                    <Button variant="outline" onClick={() => setShowFavoritesOnly(false)}>
+                                        View All Photos
+                                    </Button>
+                                ) : (
+                                    <Button asChild variant="outline">
+                                        <Link href={`/g/${galleryId}/access`}>Try a different selfie</Link>
+                                    </Button>
+                                )}
                             </div>
                         </CardContent>
                     </Card>
                 ) : (
-                    <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
-                        {filteredPhotos.map((photo) => (
-                            <div
-                                key={photo.id}
-                                className="aspect-square rounded-lg overflow-hidden bg-muted relative group cursor-pointer"
-                                onClick={() => setSelectedPhoto(photo)}
-                            >
-                                <img
-                                    src={photo.webUrl || photo.lqipBase64}
-                                    alt={photo.filename}
-                                    className="w-full h-full object-cover transition-opacity"
-                                    style={{
-                                        backgroundImage: photo.lqipBase64 ? `url(${photo.lqipBase64})` : undefined,
-                                        backgroundSize: 'cover',
-                                    }}
-                                    loading="lazy"
-                                />
+                    <div className="columns-2 md:columns-3 lg:columns-4 gap-3 space-y-3">
+                        {filteredPhotos.map((photo) => {
+                            // Determine if this is a portrait or landscape image based on dimensions
+                            const isPortrait = photo.height && photo.width ? photo.height > photo.width : false;
 
-                                {/* Selection checkbox */}
-                                {canSelect && (
-                                    <div
-                                        className="absolute top-2 left-2 z-10"
-                                        onClick={(e) => {
-                                            e.stopPropagation();
-                                            toggleSelection(photo.id);
+                            return (
+                                <div
+                                    key={photo.id}
+                                    className="break-inside-avoid overflow-hidden bg-muted relative group cursor-pointer mb-3 shadow-sm hover:shadow-lg transition-shadow"
+                                    onClick={() => setSelectedPhoto(photo)}
+                                >
+                                    <img
+                                        src={photo.webUrl || photo.lqipBase64}
+                                        alt={photo.filename}
+                                        className="w-full h-auto object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+                                        style={{
+                                            backgroundImage: photo.lqipBase64 ? `url(${photo.lqipBase64})` : undefined,
+                                            backgroundSize: 'cover',
                                         }}
-                                    >
-                                        <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center transition-colors ${selectedIds.has(photo.id)
-                                            ? 'bg-primary border-primary'
-                                            : 'bg-white/80 border-white/80 group-hover:border-primary'
-                                            }`}>
-                                            {selectedIds.has(photo.id) && (
-                                                <svg className="w-4 h-4 text-primary-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                        loading="lazy"
+                                    />
+
+                                    {/* Selection Heart */}
+                                    {canSelect && (
+                                        <button
+                                            className="absolute top-3 right-3 z-10 p-1.5 rounded-full bg-white/80 backdrop-blur-sm shadow-md hover:bg-white transition-all hover:scale-110"
+                                            onClick={(e) => {
+                                                e.stopPropagation();
+                                                toggleSelection(photo.id);
+                                            }}
+                                        >
+                                            {selectedIds.has(photo.id) ? (
+                                                <svg className="w-5 h-5 text-rose-500" viewBox="0 0 24 24" fill="currentColor">
+                                                    <path d="M11.645 20.91l-.007-.003-.022-.012a15.247 15.247 0 01-.383-.218 25.18 25.18 0 01-4.244-3.17C4.688 15.36 2.25 12.174 2.25 8.25 2.25 5.322 4.714 3 7.688 3A5.5 5.5 0 0112 5.052 5.5 5.5 0 0116.313 3c2.973 0 5.437 2.322 5.437 5.25 0 3.925-2.438 7.111-4.739 9.256a25.175 25.175 0 01-4.244 3.17 15.247 15.247 0 01-.383.219l-.022.012-.007.004-.003.001a.752.752 0 01-.704 0l-.003-.001z" />
+                                                </svg>
+                                            ) : (
+                                                <svg className="w-5 h-5 text-gray-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+                                                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
                                                 </svg>
                                             )}
-                                        </div>
-                                    </div>
-                                )}
+                                        </button>
+                                    )}
 
-                                <div className="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition-opacity" />
-                            </div>
-                        ))}
+                                    {/* Hover overlay */}
+                                    <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+
+                                    {/* Download/Action indicator on hover */}
+                                    {canDownload && (
+                                        <div className="absolute bottom-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                                            <div className="w-8 h-8 rounded-full bg-white/90 flex items-center justify-center shadow-md">
+                                                <svg className="w-4 h-4 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                                                </svg>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            );
+                        })}
                     </div>
                 )}
             </main>
 
-            {/* Photo Modal */}
-            <Dialog open={!!selectedPhoto} onOpenChange={() => setSelectedPhoto(null)}>
-                <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-                    {selectedPhoto && (
-                        <div className="space-y-4">
-                            <img
-                                src={selectedPhoto.webUrl || selectedPhoto.lqipBase64}
-                                alt={selectedPhoto.filename}
-                                className="w-full max-h-[60vh] object-contain bg-black rounded-lg"
-                            />
+            {/* Full-Canvas Photo Viewer */}
+            {selectedPhoto && (
+                <div className="fixed inset-0 z-50 bg-stone-100">
+                    {/* Header */}
+                    <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-4 md:px-6 py-4 bg-white/80 backdrop-blur-sm border-b border-gray-200">
+                        <button
+                            onClick={() => setSelectedPhoto(null)}
+                            className="flex items-center gap-2 text-gray-600 hover:text-gray-900 transition-colors"
+                        >
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                            </svg>
+                            <span className="text-sm font-medium hidden sm:inline">Back to Gallery</span>
+                        </button>
+                        <div className="flex items-center gap-3">
+                            {/* Slideshow Play Button */}
+                            <button
+                                onClick={() => {
+                                    setSelectedPhoto(null);
+                                    startSlideshow(currentPhotoIndex, 'canvas');
+                                }}
+                                className="p-2 rounded-full hover:bg-gray-100 transition-colors"
+                                title="Start Slideshow"
+                            >
+                                <svg className="w-5 h-5 text-gray-600" fill="currentColor" viewBox="0 0 24 24">
+                                    <path d="M8 5v14l11-7z" />
+                                </svg>
+                            </button>
+                            <div className="text-sm text-gray-500">
+                                {currentPhotoIndex + 1} of {filteredPhotos.length}
+                            </div>
+                        </div>
+                    </div>
 
-                            {/* Action Buttons */}
-                            <div className="flex flex-wrap gap-2">
+                    {/* Main Content - Split Layout */}
+                    <div className="flex h-full pt-16">
+                        {/* Left Panel - Image Canvas (80% on desktop, full on mobile) */}
+                        <div className="flex-1 lg:w-4/5 relative flex items-center justify-center bg-stone-100 p-4 md:p-8">
+                            {/* Previous Arrow */}
+                            <button
+                                onClick={goToPrevPhoto}
+                                disabled={!hasPrevPhoto}
+                                className={`absolute left-2 md:left-6 top-1/2 -translate-y-1/2 z-10 w-10 h-10 md:w-12 md:h-12 rounded-full bg-white shadow-lg flex items-center justify-center transition-all ${hasPrevPhoto
+                                    ? 'hover:bg-gray-50 hover:scale-105 cursor-pointer opacity-80 hover:opacity-100'
+                                    : 'opacity-30 cursor-not-allowed'
+                                    }`}
+                            >
+                                <svg className="w-5 h-5 md:w-6 md:h-6 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                                </svg>
+                            </button>
+
+                            {/* Image */}
+                            <div className="max-w-full max-h-full flex items-center justify-center relative">
+                                <img
+                                    src={selectedPhoto.webUrl || selectedPhoto.lqipBase64}
+                                    alt={selectedPhoto.filename}
+                                    className="max-w-full max-h-[calc(100vh-10rem)] object-contain shadow-2xl"
+                                    style={{
+                                        backgroundImage: selectedPhoto.lqipBase64 ? `url(${selectedPhoto.lqipBase64})` : undefined,
+                                        backgroundSize: 'cover',
+                                    }}
+                                />
+
+                                {/* Selection Heart - Over Image */}
                                 {canSelect && (
-                                    <Button
-                                        variant={selectedIds.has(selectedPhoto.id) ? 'default' : 'outline'}
+                                    <button
+                                        className="absolute top-4 right-4 p-2.5 rounded-full bg-white/90 backdrop-blur-sm shadow-lg hover:bg-white transition-all hover:scale-110"
                                         onClick={() => toggleSelection(selectedPhoto.id)}
                                     >
-                                        {selectedIds.has(selectedPhoto.id) ? 'Selected ✓' : 'Select'}
-                                    </Button>
+                                        {selectedIds.has(selectedPhoto.id) ? (
+                                            <svg className="w-6 h-6 text-rose-500" viewBox="0 0 24 24" fill="currentColor">
+                                                <path d="M11.645 20.91l-.007-.003-.022-.012a15.247 15.247 0 01-.383-.218 25.18 25.18 0 01-4.244-3.17C4.688 15.36 2.25 12.174 2.25 8.25 2.25 5.322 4.714 3 7.688 3A5.5 5.5 0 0112 5.052 5.5 5.5 0 0116.313 3c2.973 0 5.437 2.322 5.437 5.25 0 3.925-2.438 7.111-4.739 9.256a25.175 25.175 0 01-4.244 3.17 15.247 15.247 0 01-.383.219l-.022.012-.007.004-.003.001a.752.752 0 01-.704 0l-.003-.001z" />
+                                            </svg>
+                                        ) : (
+                                            <svg className="w-6 h-6 text-gray-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5}>
+                                                <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
+                                            </svg>
+                                        )}
+                                    </button>
                                 )}
-                                {canDownload && (
-                                    <Button variant="outline" onClick={() => handleDownload(selectedPhoto)}>
-                                        Download
-                                    </Button>
-                                )}
-                                <Button variant="outline" onClick={() => setShowPrintDialog(true)}>
-                                    🖨️ Request Print
-                                </Button>
                             </div>
 
-                            {/* Comments Section (Primary Client Only) */}
-                            {canComment && (
-                                <div className="border-t pt-4 space-y-4">
-                                    <h4 className="font-semibold">Comments</h4>
+                            {/* Next Arrow */}
+                            <button
+                                onClick={goToNextPhoto}
+                                disabled={!hasNextPhoto}
+                                className={`absolute right-2 md:right-6 top-1/2 -translate-y-1/2 z-10 w-10 h-10 md:w-12 md:h-12 rounded-full bg-white shadow-lg flex items-center justify-center transition-all ${hasNextPhoto
+                                    ? 'hover:bg-gray-50 hover:scale-105 cursor-pointer opacity-80 hover:opacity-100'
+                                    : 'opacity-30 cursor-not-allowed'
+                                    }`}
+                            >
+                                <svg className="w-5 h-5 md:w-6 md:h-6 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                                </svg>
+                            </button>
+                        </div>
 
-                                    {/* Comment List */}
-                                    <div className="space-y-2 max-h-40 overflow-y-auto">
+                        {/* Right Panel - Actions (20% on desktop, hidden on mobile - shown in bottom sheet) */}
+                        <div className="hidden lg:flex lg:w-1/5 bg-white border-l border-gray-200 flex-col">
+                            <div className="flex-1 overflow-y-auto p-6 pt-8">
+                                {/* Action Buttons */}
+                                <div className="space-y-3 mb-8">
+                                    {canDownload && (
+                                        <button
+                                            onClick={() => handleDownload(selectedPhoto)}
+                                            className="w-full flex items-center justify-center gap-2 px-4 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-gray-700 font-medium"
+                                        >
+                                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                            </svg>
+                                            Download
+                                        </button>
+                                    )}
+                                    <button
+                                        onClick={() => setShowPrintDialog(true)}
+                                        className="w-full flex items-center justify-center gap-2 px-4 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-gray-700 font-medium"
+                                    >
+                                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                                        </svg>
+                                        Request Print
+                                    </button>
+                                </div>
+
+                                {/* Comments Section */}
+                                <div className="border-t border-gray-200 pt-6">
+                                    <h4 className="font-semibold text-gray-900 mb-4">Comments</h4>
+
+                                    {/* Comments List */}
+                                    <div className="space-y-3 mb-4 max-h-60 overflow-y-auto">
                                         {comments.length === 0 ? (
-                                            <p className="text-sm text-muted-foreground">No comments yet</p>
+                                            <p className="text-sm text-gray-500">No comments yet</p>
                                         ) : (
                                             comments.map((comment) => (
-                                                <div key={comment.id} className="bg-muted p-2 rounded text-sm">
-                                                    <div className="flex justify-between">
-                                                        <span className="font-medium">{comment.primaryClient?.name || 'Client'}</span>
-                                                        <span className="text-xs text-muted-foreground">
+                                                <div key={comment.id} className="bg-gray-50 p-3 rounded-lg">
+                                                    <div className="flex justify-between items-start mb-1">
+                                                        <span className="text-sm font-medium text-gray-900">
+                                                            {comment.primaryClient?.name || 'Client'}
+                                                        </span>
+                                                        <span className="text-xs text-gray-500">
                                                             {new Date(comment.createdAt).toLocaleDateString()}
                                                         </span>
                                                     </div>
-                                                    <p>{comment.content}</p>
+                                                    <p className="text-sm text-gray-700">{comment.content}</p>
                                                 </div>
                                             ))
                                         )}
                                     </div>
 
                                     {/* Add Comment */}
-                                    <div className="flex gap-2">
-                                        <Input
-                                            placeholder="Add a comment..."
-                                            value={newComment}
-                                            onChange={(e) => setNewComment(e.target.value)}
-                                            onKeyDown={(e) => e.key === 'Enter' && handleAddComment()}
-                                        />
-                                        <Button onClick={handleAddComment} disabled={isSubmittingComment || !newComment.trim()}>
-                                            {isSubmittingComment ? '...' : 'Post'}
-                                        </Button>
-                                    </div>
+                                    {canComment && (
+                                        <div className="space-y-2">
+                                            <Input
+                                                placeholder="Add a comment..."
+                                                value={newComment}
+                                                onChange={(e) => setNewComment(e.target.value)}
+                                                onKeyDown={(e) => e.key === 'Enter' && handleAddComment()}
+                                                className="text-sm"
+                                            />
+                                            <Button
+                                                onClick={handleAddComment}
+                                                disabled={isSubmittingComment || !newComment.trim()}
+                                                className="w-full"
+                                                size="sm"
+                                            >
+                                                {isSubmittingComment ? 'Posting...' : 'Post'}
+                                            </Button>
+                                        </div>
+                                    )}
                                 </div>
-                            )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Mobile Bottom Action Bar */}
+                    <div className="lg:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-4 flex items-center justify-center gap-4">
+                        {canDownload && (
+                            <button
+                                onClick={() => handleDownload(selectedPhoto)}
+                                className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-gray-700 font-medium text-sm"
+                            >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                </svg>
+                                Download
+                            </button>
+                        )}
+                        <button
+                            onClick={() => setShowPrintDialog(true)}
+                            className="flex items-center gap-2 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-gray-700 font-medium text-sm"
+                        >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                            </svg>
+                            Request Print
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Slideshow Mode */}
+            {slideshowActive && filteredPhotos.length > 0 && (
+                <div className="fixed inset-0 z-[60] bg-black flex items-center justify-center">
+                    {/* Top Controls */}
+                    <div className="absolute top-0 left-0 right-0 z-10 flex items-center justify-between px-6 py-4">
+                        {/* Photo Counter */}
+                        <div className="text-white/70 text-sm font-medium">
+                            {slideshowIndex + 1} / {filteredPhotos.length}
+                        </div>
+
+                        {/* Right Controls */}
+                        <div className="flex items-center gap-2">
+                            {/* Pause/Play Toggle */}
+                            <button
+                                onClick={() => setSlideshowPaused((prev) => !prev)}
+                                className="p-3 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
+                                title={slideshowPaused ? 'Play' : 'Pause'}
+                            >
+                                {slideshowPaused ? (
+                                    <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M8 5v14l11-7z" />
+                                    </svg>
+                                ) : (
+                                    <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+                                    </svg>
+                                )}
+                            </button>
+
+                            {/* Close Button */}
+                            <button
+                                onClick={closeSlideshow}
+                                className="p-3 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
+                                title="Close Slideshow"
+                            >
+                                <svg className="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Navigation Arrows */}
+                    <button
+                        onClick={slideshowGoPrev}
+                        className="absolute left-4 md:left-8 top-1/2 -translate-y-1/2 z-10 p-3 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
+                    >
+                        <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                        </svg>
+                    </button>
+
+                    <button
+                        onClick={slideshowGoNext}
+                        className="absolute right-4 md:right-8 top-1/2 -translate-y-1/2 z-10 p-3 rounded-full bg-white/10 hover:bg-white/20 transition-colors"
+                    >
+                        <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                        </svg>
+                    </button>
+
+                    {/* Photo Display with Fade Transition */}
+                    <div className="relative max-w-[90vw] max-h-[85vh] flex items-center justify-center">
+                        <img
+                            key={filteredPhotos[slideshowIndex]?.id}
+                            src={filteredPhotos[slideshowIndex]?.webUrl || filteredPhotos[slideshowIndex]?.lqipBase64}
+                            alt={filteredPhotos[slideshowIndex]?.filename}
+                            className="max-w-full max-h-[85vh] object-contain animate-fade-in"
+                            style={{
+                                animation: 'fadeIn 0.5s ease-in-out',
+                            }}
+                        />
+
+                        {/* Heart Indicator for Selected Photos */}
+                        {canSelect && selectedIds.has(filteredPhotos[slideshowIndex]?.id) && (
+                            <div className="absolute top-4 right-4 p-2 rounded-full bg-white/20 backdrop-blur-sm">
+                                <svg className="w-5 h-5 text-rose-400" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M11.645 20.91l-.007-.003-.022-.012a15.247 15.247 0 01-.383-.218 25.18 25.18 0 01-4.244-3.17C4.688 15.36 2.25 12.174 2.25 8.25 2.25 5.322 4.714 3 7.688 3A5.5 5.5 0 0112 5.052 5.5 5.5 0 0116.313 3c2.973 0 5.437 2.322 5.437 5.25 0 3.925-2.438 7.111-4.739 9.256a25.175 25.175 0 01-4.244 3.17 15.247 15.247 0 01-.383.219l-.022.012-.007.004-.003.001a.752.752 0 01-.704 0l-.003-.001z" />
+                                </svg>
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Paused Indicator */}
+                    {slideshowPaused && (
+                        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 px-4 py-2 bg-white/10 backdrop-blur-sm rounded-full text-white/80 text-sm font-medium">
+                            Paused
                         </div>
                     )}
-                </DialogContent>
-            </Dialog>
+                </div>
+            )}
 
             {/* Print Request Dialog */}
             <Dialog open={showPrintDialog} onOpenChange={setShowPrintDialog}>

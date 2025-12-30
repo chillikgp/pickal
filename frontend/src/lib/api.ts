@@ -138,6 +138,8 @@ export interface Gallery {
     downloadResolution: 'web' | 'original';
     selectionState: 'DISABLED' | 'OPEN' | 'LOCKED';
     commentsEnabled: boolean;
+    coverPhotoId?: string | null;
+    coverPhoto?: Photo;
     createdAt: string;
     updatedAt: string;
     sections?: Section[];
