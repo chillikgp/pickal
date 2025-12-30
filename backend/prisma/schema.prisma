@@ -59,6 +59,7 @@ model Gallery {
   downloadResolution  String        @default("web") // "web" or "original"
   selectionState      SelectionState @default(DISABLED)
   commentsEnabled     Boolean       @default(true)
+  selfieMatchingEnabled Boolean     @default(true) // Hard guardrail for selfie matching
   
   // Cover photo for hero section
   coverPhotoId        String?
@@ -74,6 +75,7 @@ model Gallery {
   photos         Photo[]
   primaryClients PrimaryClient[]
   guests         Guest[]
+  selfieFaces    GuestSelfieFace[]
 
   @@index([photographerId])
   @@index([privateKey])
@@ -226,6 +228,31 @@ model Guest {
   @@index([sessionToken])
   @@index([mobileNumber, galleryId])
   @@map("guests")
+}
+
+// ============================================================================
+// GUEST SELFIE FACE CACHE
+// Stores cached face mappings to avoid re-processing same selfie
+// ============================================================================
+
+model GuestSelfieFace {
+  id          String   @id @default(uuid())
+  
+  galleryId   String
+  gallery     Gallery  @relation(fields: [galleryId], references: [id], onDelete: Cascade)
+  
+  faceId      String   // Rekognition FaceId from SearchFacesByImage
+  faceHash    String   // Perceptual hash of selfie image
+  
+  // Cached matched photo IDs for quick retrieval
+  matchedPhotoIds String[] @default([])
+  
+  createdAt   DateTime @default(now())
+  lastUsedAt  DateTime @default(now())
+
+  @@unique([galleryId, faceHash])
+  @@index([galleryId])
+  @@map("guest_selfie_faces")
 }
 
 // ============================================================================

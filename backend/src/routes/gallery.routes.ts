@@ -36,6 +36,7 @@ const updateGallerySchema = z.object({
     downloadResolution: z.enum(['web', 'original']).optional(),
     selectionState: z.enum(['DISABLED', 'OPEN', 'LOCKED']).optional(),
     commentsEnabled: z.boolean().optional(),
+    selfieMatchingEnabled: z.boolean().optional(),
     coverPhotoId: z.string().uuid().nullable().optional(),
 });
 
@@ -248,6 +249,7 @@ router.patch('/:id', requirePhotographer, async (req: AuthenticatedRequest, res:
                 downloadResolution: data.downloadResolution,
                 selectionState: data.selectionState,
                 commentsEnabled: data.commentsEnabled,
+                selfieMatchingEnabled: data.selfieMatchingEnabled,
                 coverPhotoId: data.coverPhotoId,
             },
         });

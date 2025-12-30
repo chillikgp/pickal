@@ -42,6 +42,9 @@ interface MulterRequest extends Request {
  * POST /api/face/guest-access
  * Upload selfie and create guest session
  * Returns matched photos and session token
+ * 
+ * Cost optimization: Uses perceptual hashing to cache face detection results.
+ * Same selfie uploaded twice will reuse cached results (no Rekognition call).
  */
 router.post(
     '/guest-access',
@@ -57,40 +60,85 @@ router.post(
             // Verify gallery exists and allows guest access
             const gallery = await prisma.gallery.findUnique({
                 where: { id: data.galleryId },
-                select: { id: true, accessModes: true, name: true },
+                select: {
+                    id: true,
+                    accessModes: true,
+                    name: true,
+                    selfieMatchingEnabled: true,
+                },
             });
 
             if (!gallery) {
                 throw notFound('Gallery not found');
             }
 
+            // Hard guardrail: Check if selfie matching is enabled
+            if (!gallery.selfieMatchingEnabled) {
+                console.log(`[FACE] Selfie matching DISABLED for gallery ${data.galleryId}`);
+                throw forbidden('Selfie matching is disabled for this gallery');
+            }
+
             if (!gallery.accessModes.includes('GUEST_SELFIE')) {
                 throw forbidden('Guest access is not enabled for this gallery');
             }
 
-            // Store selfie
-            const storageService = getStorageService();
-            const selfieResult = await storageService.upload(
-                req.file.buffer,
-                `selfie-${Date.now()}.jpg`,
-                'originals'
-            );
+            // Generate perceptual hash of the selfie
+            const { generateImageHash } = await import('../services/hash.service.js');
+            const imageHash = await generateImageHash(req.file.buffer);
+            console.log(`[FACE] Generated hash for selfie: ${imageHash}`);
 
-            // Search for matching faces
-            const faceService = getFaceRecognitionService();
-            console.log(`[FACE] Searching faces in gallery ${data.galleryId}`);
-            console.log(`[FACE] Using provider: ${faceService.getProviderName()}`);
+            // Check cache for existing face detection
+            const { selfieCacheService } = await import('../services/selfie-cache.service.js');
+            const cachedFace = await selfieCacheService.lookupCachedFace(data.galleryId, imageHash);
 
-            const matches = await faceService.searchFaces(
-                req.file.buffer,
-                data.galleryId,
-                80 // 80% threshold
-            );
+            let matchedPhotoIds: string[];
+            let faceId: string;
+            let cacheHit = false;
 
-            console.log(`[FACE] Found ${matches.length} matches:`, matches.map(m => ({ photoId: m.photoId, similarity: m.similarity })));
-            const matchedPhotoIds = matches.map(m => m.photoId);
+            if (cachedFace) {
+                // CACHE HIT: Reuse cached results, skip Rekognition
+                console.log(`[FACE] Cache HIT - gallery: ${data.galleryId}, hash: ${imageHash.slice(0, 8)}...`);
+                console.log(`[FACE] Reusing cached faceId: ${cachedFace.faceId}, matchedPhotos: ${cachedFace.matchedPhotoIds.length}`);
 
-            // Get matched photo details for debugging
+                matchedPhotoIds = cachedFace.matchedPhotoIds;
+                faceId = cachedFace.faceId;
+                cacheHit = true;
+
+                // Update last_used_at for cache tracking
+                await selfieCacheService.updateLastUsed(cachedFace.id);
+            } else {
+                // CACHE MISS: Call Rekognition
+                console.log(`[FACE] Cache MISS - gallery: ${data.galleryId}, reason: cache_miss`);
+
+                // Store selfie (only on cache miss to avoid redundant storage)
+                const storageService = getStorageService();
+                const selfieResult = await storageService.upload(
+                    req.file.buffer,
+                    `selfie-${Date.now()}.jpg`,
+                    'originals'
+                );
+
+                // Search for matching faces
+                const faceService = getFaceRecognitionService();
+                console.log(`[REKOGNITION] SearchFacesByImage - gallery: ${data.galleryId}, reason: cache_miss`);
+                console.log(`[FACE] Using provider: ${faceService.getProviderName()}`);
+
+                const matches = await faceService.searchFaces(
+                    req.file.buffer,
+                    data.galleryId,
+                    80 // 80% threshold
+                );
+
+                console.log(`[FACE] Found ${matches.length} matches:`, matches.map(m => ({ photoId: m.photoId, similarity: m.similarity })));
+                matchedPhotoIds = matches.map(m => m.photoId);
+                faceId = matches.length > 0 ? matches[0].matchedFaceId : `no-match-${Date.now()}`;
+
+                // Cache the result for future requests
+                await selfieCacheService.cacheFace(data.galleryId, imageHash, faceId, matchedPhotoIds);
+                console.log(`[FACE] Cached face result - hash: ${imageHash.slice(0, 8)}..., faceId: ${faceId}`);
+            }
+
+            // Get matched photo details
             const matchedPhotos = await prisma.photo.findMany({
                 where: { id: { in: matchedPhotoIds } },
                 select: { id: true, filename: true },
@@ -101,7 +149,7 @@ router.post(
             const guest = await prisma.guest.create({
                 data: {
                     mobileNumber: data.mobileNumber,
-                    selfieKey: selfieResult.key,
+                    selfieKey: cacheHit ? undefined : `cached-${imageHash}`,
                     matchedPhotoIds,
                     galleryId: data.galleryId,
                 },
@@ -120,6 +168,7 @@ router.post(
                     id: gallery.id,
                     name: gallery.name,
                 },
+                cacheHit, // Expose for debugging/testing
             });
         } catch (error) {
             if (error instanceof z.ZodError) {
