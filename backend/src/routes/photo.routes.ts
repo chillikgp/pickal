@@ -29,7 +29,7 @@ const router = Router();
 const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
-        fileSize: 50 * 1024 * 1024, // 50MB
+        fileSize: 20 * 1024 * 1024, // 20MB
     },
     fileFilter: (req, file, cb) => {
         if (file.mimetype.startsWith('image/')) {
@@ -46,25 +46,70 @@ const uploadPhotoSchema = z.object({
     sectionId: z.string().uuid().optional(),
 });
 
+// Max limits
+const MAX_PHOTOS_PER_UPLOAD = 50;
+const MAX_PHOTO_SIZE_MB = 20;
+
 /**
  * POST /api/photos/upload
  * Upload a photo to a gallery
  * Photographer only
  * 
  * Process:
- * 1. Store original in S3/local
- * 2. Generate web-optimized version
- * 3. Generate LQIP
- * 4. Index faces for matching
+ * 1. Validate constraints (size, count)
+ * 2. Store original in S3/local
+ * 3. Generate web-optimized version
+ * 4. Generate LQIP
+ * 5. Index faces for matching
  */
 router.post(
     '/upload',
     requirePhotographer,
-    upload.single('photo'),
+    (req, res, next) => {
+        // Custom upload middleware to enforce limits BEFORE multer processing
+        // Note: Multer streams, so we can't check file count easily before processing.
+        // However, we can check Content-Length header as a rough guardrail,
+        // or rely on multer's limits.
+        // For file count, multer 'array' or 'fields' would be needed for bulk,
+        // but current implementation is 'single' file per request.
+        // The user requirement says "Max bulk upload: 50 images per request".
+        // If the frontend sends 50 separate requests, this backend limit on "per request"
+        // is trivially satisfied (1 per request).
+        // If the frontend sends 1 request with 50 files, we need to change upload.single() to upload.array().
+        //
+        // Assuming we want to support bulk upload in one request:
+        const uploadMiddleware = upload.array('photos', MAX_PHOTOS_PER_UPLOAD); // Use array instead of single
+
+        uploadMiddleware(req, res, (err) => {
+            if (err instanceof multer.MulterError) {
+                if (err.code === 'LIMIT_FILE_SIZE') {
+                    console.warn(`[UPLOAD_LIMIT] File size limit exceeded: ${err.message}`);
+                    return next(badRequest(`One or more files exceed the ${MAX_PHOTO_SIZE_MB}MB limit`));
+                }
+                if (err.code === 'LIMIT_FILE_COUNT') {
+                    console.warn(`[UPLOAD_LIMIT] File count limit exceeded: ${err.message}`);
+                    return next(badRequest(`Max ${MAX_PHOTOS_PER_UPLOAD} photos allowed per upload`));
+                }
+                console.warn(`[UPLOAD_ERROR] Multer error: ${err.message}`);
+                return next(badRequest(err.message));
+            } else if (err) {
+                return next(err);
+            }
+            next();
+        });
+    },
     async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
         try {
-            if (!req.file) {
-                throw badRequest('No photo file provided');
+            // req.files is array because we switched to upload.array()
+            const files = req.files as Express.Multer.File[];
+
+            if (!files || files.length === 0) {
+                throw badRequest('No photos provided');
+            }
+
+            // Double check limits just in case
+            if (files.length > MAX_PHOTOS_PER_UPLOAD) {
+                throw badRequest(`Max ${MAX_PHOTOS_PER_UPLOAD} photos allowed`);
             }
 
             const data = uploadPhotoSchema.parse(req.body);
@@ -95,56 +140,65 @@ router.post(
                 }
             }
 
-            // Process image
+            // Process all images in parallel (with some concurrency limit ideally, but Promise.all is ok for 50)
             const storageService = getStorageService();
             const faceService = getFaceRecognitionService();
 
-            // 1. Upload original
-            const originalResult = await storageService.upload(
-                req.file.buffer,
-                req.file.originalname,
-                'originals'
-            );
+            const processFile = async (file: Express.Multer.File) => {
+                // 1. Upload original
+                const originalResult = await storageService.upload(
+                    file.buffer,
+                    file.originalname,
+                    'originals'
+                );
 
-            // 2. Process and upload web version + LQIP
-            const processed = await imageService.processImage(req.file.buffer);
+                // 2. Process and upload web version + LQIP
+                const processed = await imageService.processImage(file.buffer);
 
-            const webResult = await storageService.upload(
-                processed.webBuffer,
-                req.file.originalname.replace(/\.[^.]+$/, '.jpg'),
-                'web'
-            );
+                const webResult = await storageService.upload(
+                    processed.webBuffer,
+                    file.originalname.replace(/\.[^.]+$/, '.jpg'),
+                    'web'
+                );
 
-            // 3. Create photo record
-            const photo = await prisma.photo.create({
-                data: {
-                    filename: req.file.originalname,
-                    originalKey: originalResult.key,
-                    webKey: webResult.key,
-                    lqipBase64: processed.lqipBase64,
-                    width: processed.width,
-                    height: processed.height,
-                    fileSize: req.file.size,
-                    mimeType: req.file.mimetype,
-                    galleryId: data.galleryId,
-                    sectionId: data.sectionId,
-                },
-            });
+                // 3. Create photo record
+                const photo = await prisma.photo.create({
+                    data: {
+                        filename: file.originalname,
+                        originalKey: originalResult.key,
+                        webKey: webResult.key,
+                        lqipBase64: processed.lqipBase64,
+                        width: processed.width,
+                        height: processed.height,
+                        fileSize: file.size,
+                        mimeType: file.mimetype,
+                        galleryId: data.galleryId,
+                        sectionId: data.sectionId,
+                    },
+                });
 
-            // 4. Index faces (async, don't wait)
-            faceService.indexFaces(req.file.buffer, photo.id, data.galleryId)
-                .catch(err => console.error('Face indexing failed:', err));
+                // 4. Index faces (async, don't wait)
+                faceService.indexFaces(file.buffer, photo.id, data.galleryId)
+                    .catch(err => console.error(`Face indexing failed for ${file.originalname}:`, err));
 
-            res.status(201).json({
-                photo: {
+                return {
                     id: photo.id,
                     filename: photo.filename,
                     webUrl: await storageService.getSignedUrl(webResult.key),
                     lqipBase64: photo.lqipBase64,
                     width: photo.width,
                     height: photo.height,
-                },
+                };
+            };
+
+            const uploadedPhotos = await Promise.all(files.map(processFile));
+
+            res.status(201).json({
+                success: true,
+                count: uploadedPhotos.length,
+                photos: uploadedPhotos
             });
+
         } catch (error) {
             if (error instanceof z.ZodError) {
                 next(badRequest(error.errors[0].message));

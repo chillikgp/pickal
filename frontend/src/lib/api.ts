@@ -225,12 +225,19 @@ export interface Photo {
 }
 
 export const photoApi = {
-    upload: (galleryId: string, file: File, sectionId?: string) => {
+    upload: (galleryId: string, files: File | File[], sectionId?: string) => {
         const formData = new FormData();
-        formData.append('photo', file);
         formData.append('galleryId', galleryId);
         if (sectionId) formData.append('sectionId', sectionId);
-        return apiRequest<{ photo: Photo }>('/api/photos/upload', { method: 'POST', body: formData });
+
+        if (Array.isArray(files)) {
+            files.forEach(file => formData.append('photos', file));
+        } else {
+            // For backward compatibility or single file, standardizing on 'photos' array is cleaner given backend change
+            formData.append('photos', files);
+        }
+
+        return apiRequest<{ success: boolean; count: number; photos: Photo[] }>('/api/photos/upload', { method: 'POST', body: formData });
     },
 
     getByGallery: (galleryId: string, useSession = false) =>

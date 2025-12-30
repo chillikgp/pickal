@@ -118,26 +118,69 @@ export default function GalleryDetailPage() {
         const files = e.target.files;
         if (!files || files.length === 0) return;
 
+        // Frontend Guardrails
+        const MAX_FILES = 50;
+        const MAX_SIZE_BYTES = 20 * 1024 * 1024; // 20 MB
+
+        if (files.length > MAX_FILES) {
+            toast.error(`You can upload up to ${MAX_FILES} photos at once`);
+            e.target.value = ''; // Reset input
+            return;
+        }
+
+        const validFiles: File[] = [];
+        const skippedFiles: { name: string; reason: string }[] = [];
+
+        Array.from(files).forEach(file => {
+            if (file.size > MAX_SIZE_BYTES) {
+                skippedFiles.push({ name: file.name, reason: 'exceeds 20MB' });
+            } else {
+                validFiles.push(file);
+            }
+        });
+
+        if (skippedFiles.length > 0) {
+            toast.error(`${skippedFiles.length} file(s) skipped: too large (>20MB)`);
+            // Show first few skipped files for clarity
+            console.warn('Skipped files:', skippedFiles);
+        }
+
+        if (validFiles.length === 0) {
+            e.target.value = '';
+            return;
+        }
+
         setIsUploading(true);
         setUploadProgress(0);
 
-        const fileArray = Array.from(files);
-        let uploaded = 0;
+        // Upload valid files in one batch if backend supports it, or looping (current)
+        // Since we modified backend to support bulk array, let's update frontend to send all at once?
+        // Ah, the user instruction was "Max bulk upload: 50 images per request".
+        // The current frontend loops and sends 1 by 1.
+        // We SHOULD update this to send all in one request to comply with "per request" limit effectively (1 request vs 50).
+        // However, updating to bulk upload involves changing `photoApi.upload` to `photoApi.uploadBulk` or modifying existing.
+        // Let's stick to the current loop for now BUT enforce the "50 selected" limit properly.
+        // Wait, if we Loop, we send 50 requests. The backend "Max bulk upload: 50 images per request" guardrail
+        // won't trigger if we send 50 requests of 1 image.
+        // The guardrail "Max bulk upload: 50 images per request" implies we SHOULD support bulk upload endpoint.
+        // We DID implement `upload.array` in the backend.
+        // So we should update `photoApi.upload` to support multiple files or loop?
+        // The backend middleware `upload.array('photos', 50)` expects field name `photos`.
+        // The current `photoApi.upload` uses `photo` field and single file.
+        // We need to update `photoApi` and this handler to use bulk upload.
 
-        for (const file of fileArray) {
-            try {
-                await photoApi.upload(galleryId, file, uploadSectionId || undefined);
-                uploaded++;
-                setUploadProgress(Math.round((uploaded / fileArray.length) * 100));
-            } catch (error) {
-                toast.error(`Failed to upload ${file.name}`);
-            }
+        try {
+            // New bulk upload implementation
+            await photoApi.upload(galleryId, validFiles, uploadSectionId || undefined);
+            toast.success(`Uploaded ${validFiles.length} photos`);
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : 'Upload failed');
+        } finally {
+            setIsUploading(false);
+            setUploadProgress(0);
+            loadGallery();
+            e.target.value = '';
         }
-
-        toast.success(`Uploaded ${uploaded} photos`);
-        setIsUploading(false);
-        loadGallery();
-        e.target.value = '';
     };
 
     const handleCreateSection = async () => {
@@ -435,6 +478,7 @@ export default function GalleryDetailPage() {
                             <div>
                                 <h3 className="font-semibold">Upload Photos</h3>
                                 <p className="text-sm text-muted-foreground">Select a section before uploading</p>
+                                <p className="text-xs text-muted-foreground mt-1">Max 50 photos per batch, 20MB per photo</p>
                             </div>
                             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
                                 <Select value={uploadSectionId || 'none'} onValueChange={(v) => setUploadSectionId(v === 'none' ? '' : v)}>

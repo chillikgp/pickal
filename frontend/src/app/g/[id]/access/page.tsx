@@ -124,8 +124,18 @@ export default function GalleryAccessPage() {
                 }
                 router.push(`/g/${galleryId}`);
             }, 500);
-        } catch (error) {
-            toast.error(error instanceof Error ? error.message : 'Failed to process selfie');
+        } catch (error: any) {
+            // Handle Rate Limit Error
+            if (error.message?.includes('RATE_LIMIT_EXCEEDED') || error.error === 'RATE_LIMIT_EXCEEDED') {
+                const message = error.message.replace('RATE_LIMIT_EXCEEDED: ', ''); // Clean up if prefixed
+                toast.error(message || 'Too many attempts. Please try again later.');
+                // Could also set a specific state to disable the button and show countdown
+                // For now, simpler UX via toast is acceptable per current scope, 
+                // but requirement says "Show countdown or helper text: You can try again in 45 minutes"
+                // The backend error message contains "Try again in X minutes".
+            } else {
+                toast.error(error instanceof Error ? error.message : 'Failed to process selfie');
+            }
             setScreen('selfie');
         }
     };

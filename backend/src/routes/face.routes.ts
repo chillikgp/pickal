@@ -18,7 +18,7 @@ const router = Router();
 const upload = multer({
     storage: multer.memoryStorage(),
     limits: {
-        fileSize: 10 * 1024 * 1024, // 10MB for selfies
+        fileSize: 20 * 1024 * 1024, // 20MB
     },
     fileFilter: (req, file, cb) => {
         if (file.mimetype.startsWith('image/')) {
@@ -86,6 +86,36 @@ router.post(
             const { generateImageHash } = await import('../services/hash.service.js');
             const imageHash = await generateImageHash(req.file.buffer);
             console.log(`[FACE] Generated hash for selfie: ${imageHash}`);
+
+            // Rate Limit Check (Postgres)
+            const { RateLimitService } = await import('../services/rate-limit.service.js');
+            const rateLimitKey = `${data.galleryId}:${data.mobileNumber}`; // Or use just mobileNumber if global limit desired, or session ID if available. 
+            // NOTE: The requirements say "rate_limit_key = gallery_id + guest_session_id". 
+            // However, at this point (guest-access), we are CREATING a session, so we don't have a session ID yet.
+            // We can identify by mobile number + galleryId as a proxy for "guest user" before session creation.
+            // OR we can create the session first? But we want to block BEFORE expensive Rekognition.
+            //
+            // Let's use mobileNumber + galleryId as the persistent identity key for rate limiting 
+            // since that's what the user provides to "log in".
+            // The requirement "guest_session_id" might imply rate limiting *authenticated* requests?
+            // "A guest is identified using: Anonymous session ID (cookie or local storage) Fallback: IP address"
+            // "Constraint: Max 5 selfie attempts per user per hour per gallery"
+            // "A selfie attempt is counted when: A selfie image is accepted by the backend"
+            //
+            // If this endpoint IS the "attempt", then we need to rate limit here.
+            // We'll use a compisite key of galleryId + mobileNumber to identify the "User" attempting access.
+
+            const limitResult = await RateLimitService.checkSelfieLimit(data.galleryId, `${data.galleryId}:${data.mobileNumber}`);
+
+            if (!limitResult.allowed) {
+                console.warn(`[RATE_LIMIT] Selfie attempt blocked for gallery ${data.galleryId} (key: ${rateLimitKey})`);
+                // 429 Too Many Requests
+                return res.status(429).json({
+                    error: 'RATE_LIMIT_EXCEEDED',
+                    message: limitResult.error,
+                    retryAfter: limitResult.resetInSeconds
+                });
+            }
 
             // Check cache for existing face detection
             const { selfieCacheService } = await import('../services/selfie-cache.service.js');
