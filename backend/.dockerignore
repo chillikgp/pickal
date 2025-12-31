@@ -1,0 +1,40 @@
+# Dependencies (will be installed fresh in container)
+node_modules
+
+# Build output (will be built in container)
+dist
+
+# Environment files (should never be baked into image)
+.env
+.env.*
+!.env.example
+
+# Local uploads (mock mode only)
+uploads
+
+# Version control
+.git
+.gitignore
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+
+# Documentation (not needed in image)
+*.md
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+*.test.ts
+*.spec.ts
+__tests__
+coverage
