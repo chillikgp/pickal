@@ -9,7 +9,7 @@ interface RateLimitResult {
 }
 
 export class RateLimitService {
-    private static MAX_ATTEMPTS = 5;
+    private static MAX_ATTEMPTS = 10;
     private static WINDOW_SECONDS = 3600; // 1 hour
 
     /**
