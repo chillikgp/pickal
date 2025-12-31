@@ -5,7 +5,7 @@
  * Manages JWT tokens and session tokens.
  */
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 // Token management
 let authToken: string | null = null;

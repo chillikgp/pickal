@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth-context';
-import { printApi, galleryApi, PrintRequest, Gallery } from '@/lib/api';
+import { printApi, galleryApi, PrintRequest, Gallery, API_URL } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -183,7 +183,7 @@ export default function PrintRequestsPage() {
                                                     <div className="w-full md:w-24 h-24 rounded-lg overflow-hidden bg-muted flex-shrink-0">
                                                         {request.photo?.webKey && (
                                                             <img
-                                                                src={`http://localhost:3001/uploads/${request.photo.webKey}`}
+                                                                src={`${API_URL}/uploads/${request.photo.webKey}`}
                                                                 alt={request.photo.filename}
                                                                 className="w-full h-full object-cover"
                                                             />
