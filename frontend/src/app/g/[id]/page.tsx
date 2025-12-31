@@ -72,7 +72,7 @@ export default function ClientGalleryPage() {
 
         try {
             const [galleryRes, photosRes, selectionsRes] = await Promise.all([
-                galleryApi.get(galleryId),
+                galleryApi.get(galleryId, true),
                 photoApi.getByGallery(galleryId, true),
                 selectionApi.getMy().catch(() => ({ selections: [] })),
             ]);

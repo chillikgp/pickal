@@ -172,8 +172,8 @@ export interface Section {
 export const galleryApi = {
     list: () => apiRequest<{ galleries: Gallery[] }>('/api/galleries'),
 
-    get: (id: string) =>
-        apiRequest<{ gallery: Gallery }>(`/api/galleries/${id}`),
+    get: (id: string, useSession = false) =>
+        apiRequest<{ gallery: Gallery }>(`/api/galleries/${id}`, { useSession, useAuth: !useSession }),
 
     create: (data: { name: string; description?: string; eventDate?: string }) =>
         apiRequest<{ gallery: Gallery }>('/api/galleries', { method: 'POST', body: data }),
