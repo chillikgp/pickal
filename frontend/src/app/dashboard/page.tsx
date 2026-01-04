@@ -28,7 +28,10 @@ export default function DashboardPage() {
     const [editWebsiteUrl, setEditWebsiteUrl] = useState('');
     const [editReviewUrl, setEditReviewUrl] = useState('');
     const [editWhatsappNumber, setEditWhatsappNumber] = useState('');
+    const [editStudioSlug, setEditStudioSlug] = useState('');
+    const [editCustomDomain, setEditCustomDomain] = useState('');
     const [websiteUrlError, setWebsiteUrlError] = useState('');
+    const [studioSlugError, setStudioSlugError] = useState('');
     const [isSaving, setIsSaving] = useState(false);
 
     useEffect(() => {
@@ -48,9 +51,11 @@ export default function DashboardPage() {
             setEditName(photographer.name);
             setEditBusinessName(photographer.businessName || '');
             setEditLogoUrl(photographer.logoUrl || '');
-            setEditWebsiteUrl((photographer as any).websiteUrl || '');
-            setEditReviewUrl((photographer as any).reviewUrl || '');
-            setEditWhatsappNumber((photographer as any).whatsappNumber || '');
+            setEditWebsiteUrl(photographer.websiteUrl || '');
+            setEditReviewUrl(photographer.reviewUrl || '');
+            setEditWhatsappNumber(photographer.whatsappNumber || '');
+            setEditStudioSlug(photographer.studioSlug || '');
+            setEditCustomDomain(photographer.customDomain || '');
         }
     }, [photographer]);
 
@@ -67,6 +72,23 @@ export default function DashboardPage() {
             setWebsiteUrlError('URL must start with http:// or https://');
         } else {
             setWebsiteUrlError('');
+        }
+    };
+
+    // Validate studio slug format
+    const validateStudioSlug = (slug: string): boolean => {
+        if (!slug.trim()) return true; // Empty is valid (optional)
+        const pattern = /^[a-z0-9-]+$/;
+        return pattern.test(slug) && slug.length >= 3 && slug.length <= 50;
+    };
+
+    const handleStudioSlugChange = (value: string) => {
+        const normalized = value.toLowerCase().replace(/[^a-z0-9-]/g, '');
+        setEditStudioSlug(normalized);
+        if (normalized && !validateStudioSlug(normalized)) {
+            setStudioSlugError('Use lowercase letters, numbers, and hyphens only (3-50 chars)');
+        } else {
+            setStudioSlugError('');
         }
     };
 
@@ -90,6 +112,8 @@ export default function DashboardPage() {
                 websiteUrl: editWebsiteUrl.trim() || null,
                 reviewUrl: editReviewUrl.trim() || null,
                 whatsappNumber: editWhatsappNumber.trim() || null,
+                studioSlug: editStudioSlug.trim() || null,
+                customDomain: editCustomDomain.trim().toLowerCase() || null,
             });
             toast.success('Branding updated');
             setIsSettingsOpen(false);
@@ -202,9 +226,56 @@ export default function DashboardPage() {
                                             placeholder="919876543210"
                                         />
                                         <p className="text-xs text-muted-foreground">
-                                            Include country code (e.g. 91 for India). Used for "Prints" & "Share" inquiries.
+                                            Include country code (e.g. 91 for India). Used for "Prints" &amp; "Share" inquiries.
                                         </p>
                                     </div>
+
+                                    {/* Divider for URL Settings */}
+                                    <div className="border-t pt-4 mt-4">
+                                        <h4 className="font-medium text-sm mb-3">Gallery URL Settings</h4>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label htmlFor="edit-studio-slug">Studio Slug</Label>
+                                        <Input
+                                            id="edit-studio-slug"
+                                            value={editStudioSlug}
+                                            onChange={(e) => handleStudioSlugChange(e.target.value)}
+                                            placeholder="mybabypictures"
+                                            className={studioSlugError ? 'border-red-500' : ''}
+                                        />
+                                        {studioSlugError ? (
+                                            <p className="text-xs text-red-500">{studioSlugError}</p>
+                                        ) : (
+                                            <div className="text-xs text-muted-foreground space-y-1">
+                                                <p>Your unique studio identifier for gallery URLs.</p>
+                                                {editStudioSlug && (
+                                                    <p className="font-mono text-emerald-600 dark:text-emerald-400">
+                                                        pickal-tan.vercel.app/<strong>{editStudioSlug}</strong>/g/gallery-name
+                                                    </p>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label htmlFor="edit-custom-domain">Custom Domain (Optional)</Label>
+                                        <Input
+                                            id="edit-custom-domain"
+                                            value={editCustomDomain}
+                                            onChange={(e) => setEditCustomDomain(e.target.value.toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, ''))}
+                                            placeholder="gallery.mybabypictures.in"
+                                        />
+                                        <div className="text-xs text-muted-foreground space-y-1">
+                                            <p>Point your domain's CNAME to <code className="bg-gray-100 px-1 rounded">cname.vercel-dns.com</code></p>
+                                            {editCustomDomain && (
+                                                <p className="font-mono text-emerald-600 dark:text-emerald-400">
+                                                    <strong>{editCustomDomain}</strong>/g/gallery-name
+                                                </p>
+                                            )}
+                                        </div>
+                                    </div>
+
                                     {/* Preview */}
                                     {(editLogoUrl || editBusinessName || editName) && (
                                         <div className="border rounded-lg p-4 bg-gray-900 flex flex-col items-center">

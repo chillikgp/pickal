@@ -29,6 +29,12 @@ const loginSchema = z.object({
     password: z.string(),
 });
 
+// Slug validation regex - lowercase letters, numbers, hyphens only
+const slugRegex = /^[a-z0-9-]+$/;
+
+// Domain validation regex - no protocol, no trailing slash
+const domainRegex = /^[a-z0-9][a-z0-9.-]*[a-z0-9]$/;
+
 const updateProfileSchema = z.object({
     name: z.string().min(1).optional(),
     businessName: z.string().optional(),
@@ -36,6 +42,19 @@ const updateProfileSchema = z.object({
     websiteUrl: z.string().url().optional().nullable(),
     reviewUrl: z.string().url().optional().nullable(),
     whatsappNumber: z.string().optional().nullable(),
+    // Studio Slugs + Custom Domains
+    studioSlug: z.string()
+        .min(3, 'Studio slug must be at least 3 characters')
+        .max(50, 'Studio slug must be at most 50 characters')
+        .regex(slugRegex, 'Studio slug must be lowercase letters, numbers, and hyphens only')
+        .optional()
+        .nullable(),
+    customDomain: z.string()
+        .min(4, 'Domain must be at least 4 characters')
+        .max(100, 'Domain must be at most 100 characters')
+        .regex(domainRegex, 'Domain must be a valid hostname without protocol')
+        .optional()
+        .nullable(),
 });
 
 // Helper to generate JWT
@@ -173,6 +192,8 @@ router.get('/me', requirePhotographer, async (req: AuthenticatedRequest, res: Re
                 websiteUrl: true,
                 reviewUrl: true,
                 whatsappNumber: true,
+                studioSlug: true,
+                customDomain: true,
                 createdAt: true,
                 _count: {
                     select: { galleries: true },
@@ -203,6 +224,8 @@ router.patch('/profile', requirePhotographer, async (req: AuthenticatedRequest, 
                 websiteUrl: data.websiteUrl,
                 reviewUrl: data.reviewUrl,
                 whatsappNumber: data.whatsappNumber,
+                studioSlug: data.studioSlug?.toLowerCase(),
+                customDomain: data.customDomain?.toLowerCase(),
             },
             select: {
                 id: true,
@@ -213,6 +236,8 @@ router.patch('/profile', requirePhotographer, async (req: AuthenticatedRequest, 
                 websiteUrl: true,
                 reviewUrl: true,
                 whatsappNumber: true,
+                studioSlug: true,
+                customDomain: true,
                 createdAt: true,
             },
         });

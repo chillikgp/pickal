@@ -24,11 +24,18 @@ model Photographer {
   websiteUrl     String?   // Studio website URL for clickable branding
   reviewUrl      String?   // Google Review or similar review page URL
   whatsappNumber String?   // WhatsApp number for inquiries (include country code)
+  
+  // Studio Slugs + Custom Domains (P0)
+  studioSlug     String?   @unique  // URL-safe, lowercase, hyphenated (e.g., "mybabypictures")
+  customDomain   String?   @unique  // Optional custom domain (e.g., "gallery.mybabypictures.in")
+  
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
   galleries Gallery[]
 
+  @@index([studioSlug])
+  @@index([customDomain])
   @@map("photographers")
 }
 

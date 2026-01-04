@@ -15,6 +15,7 @@ import selectionRoutes from './routes/selection.routes.js';
 import commentRoutes from './routes/comment.routes.js';
 import printRoutes from './routes/print.routes.js';
 import faceRoutes from './routes/face.routes.js';
+import studioRoutes from './routes/studio.routes.js';
 import { errorHandler } from './middleware/error.middleware.js';
 
 // Initialize Prisma
@@ -50,6 +51,7 @@ app.use('/api/selections', selectionRoutes);
 app.use('/api/comments', commentRoutes);
 app.use('/api/print-requests', printRoutes);
 app.use('/api/face', faceRoutes);
+app.use('/api/studios', studioRoutes);
 
 // Error handling
 app.use(errorHandler);

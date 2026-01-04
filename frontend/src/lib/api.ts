@@ -114,6 +114,11 @@ export interface Photographer {
     name: string;
     businessName?: string;
     logoUrl?: string;
+    websiteUrl?: string;
+    reviewUrl?: string;
+    whatsappNumber?: string;
+    studioSlug?: string | null;    // Studio-level slug for URL routing
+    customDomain?: string | null;  // Optional custom domain
     createdAt: string;
 }
 
@@ -138,6 +143,8 @@ export const authApi = {
         websiteUrl?: string | null;
         reviewUrl?: string | null;
         whatsappNumber?: string | null;
+        studioSlug?: string | null;
+        customDomain?: string | null;
     }) =>
         apiRequest<{ photographer: Photographer }>('/api/auth/profile', { method: 'PATCH', body: data }),
 };
@@ -252,6 +259,46 @@ export const galleryApi = {
             `/api/galleries/${id}/public-config`,
             { useAuth: false }
         ),
+};
+
+// ============================================================================
+// STUDIO API (Slug + Domain Resolution)
+// ============================================================================
+
+export interface StudioResolveResponse {
+    gallery: {
+        id: string;
+        name: string;
+        customSlug: string | null;
+        eventDate: string | null;
+        coverPhotoId: string | null;
+        coverPhotoUrl: string | null;
+    };
+    photographer: Photographer | null;
+    resolvedVia: 'customDomain' | 'studioSlug' | 'uuid' | null;
+    canonicalUrl: string;
+}
+
+export const studioApi = {
+    resolve: (params: {
+        host?: string;
+        studioSlug?: string;
+        gallerySlug?: string;
+        uuid?: string;
+    }) => {
+        const query = new URLSearchParams();
+        if (params.host) query.append('host', params.host);
+        if (params.studioSlug) query.append('studioSlug', params.studioSlug);
+        if (params.gallerySlug) query.append('gallerySlug', params.gallerySlug);
+        if (params.uuid) query.append('uuid', params.uuid);
+        return apiRequest<StudioResolveResponse>(`/api/studios/resolve?${query}`, { useAuth: false });
+    },
+
+    getBySlug: (slug: string) =>
+        apiRequest<{ studio: Photographer }>(`/api/studios/by-slug/${slug}`, { useAuth: false }),
+
+    getByDomain: (domain: string) =>
+        apiRequest<{ studio: Photographer }>(`/api/studios/by-domain/${domain}`, { useAuth: false }),
 };
 
 // ============================================================================
