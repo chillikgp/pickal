@@ -33,7 +33,42 @@ flowchart LR
 ```
 
 ---
-
+ 
+## 9. Privacy & Safety Guarantees
+ 
+| Guarantee | Implementation | Verified |
+|-----------|----------------|----------|
+| **Guest Access Isolation** | Database-level filtering (`IN matchedIds`) prevents guests from viewing unmatched photos. | ✅ |
+| **Credential Secrecy** | `privateKey` and `customPassword` are hidden from guest API responses. | ✅ |
+| **Download Permissions** | Server-side checks ensure guests can only ZIP/download their own matched photos. | ✅ |
+| **No Indexing** | `robots.txt` and meta tags prevent search engine indexing of gallery pages. | ✅ |
+ 
+---
+ 
+## 1a. Core Flows
+ 
+### Access Control
+- **Photographer**: JWT Auth via Email/Password. Full control.
+- **Primary Client**: 
+  - **Private Key**: UUID-based full access.
+  - **Custom Slug + Password**: User-friendly full access.
+- **Guest**: 
+  - **Selfie Verification**: Mobile + Selfie -> Rekognition -> Session Token.
+  - **Strict Scope**: Can only see/download photos containing their face.
+ 
+### Pagination & Infinite Scroll
+- **Strategy**: Cursor-based pagination (`before/after` ID) for performance.
+- **Page Size**: 50 photos per batch.
+- **State Management**: Frontend caches loaded photos per-section to allow instant tab switching.
+- **Consistency**: Sorting by `[sortOrder, createdAt, id]` ensuring stable cursors.
+ 
+### Download All
+- **Method**: Streaming ZIP generation (Server-side).
+- **Flow**: Client req -> Server (Auth verify) -> S3 Stream -> Archiver (ZIP) -> Client Response Pipe.
+- **Benefit**: Low memory footprint (no buffering entire ZIP), supports large galleries.
+ 
+---
+ 
 ## 2. Limits & Guardrails
 
 ### Application Limits
@@ -45,7 +80,8 @@ flowchart LR
 | **Selfie attempts per hour** | 5 | [rate-limit.service.ts:12](file:///Users/saurav.sahu/Documents/randomprojects/pickal/backend/src/services/rate-limit.service.ts#L12) | `[RATE_LIMIT] Selfie attempt blocked` | Change `MAX_ATTEMPTS` constant |
 | **Selfie rate limit window** | 1 hour | [rate-limit.service.ts:13](file:///Users/saurav.sahu/Documents/randomprojects/pickal/backend/src/services/rate-limit.service.ts#L13) | Same as above | Change `WINDOW_SECONDS` constant |
 | **Web image max dimension** | 1920px | [image.service.ts:19-20](file:///Users/saurav.sahu/Documents/randomprojects/pickal/backend/src/services/image.service.ts#L19) | N/A | Change `WEB_MAX_WIDTH/HEIGHT` |
-| **Inline sections in header** | 4 | [GalleryHeader.tsx:95](file:///Users/saurav.sahu/Documents/randomprojects/pickal/frontend/src/components/GalleryHeader.tsx#L95) | N/A | Change `MAX_INLINE_SECTIONS` |
+| **Inline sections in header** | 4 | [GalleryHeader.tsx](file:///Users/saurav.sahu/Documents/randomprojects/pickal/frontend/src/components/GalleryHeader.tsx) | N/A | Change `MAX_INLINE_SECTIONS` |
+| **Pagination Page Size** | 50 | [page.tsx](file:///Users/saurav.sahu/Documents/randomprojects/pickal/frontend/src/app/g/%5Bid%5D/page.tsx) / [API](file:///Users/saurav.sahu/Documents/randomprojects/pickal/backend/src/routes/photo.routes.ts) | N/A | Update `limit` param in `loadSectionItems` |
 
 ### Infrastructure Limits (Cloud Run)
 

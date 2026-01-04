@@ -40,6 +40,14 @@ export default function GalleryDetailPage() {
     const [selectionState, setSelectionState] = useState<'DISABLED' | 'OPEN' | 'LOCKED'>('DISABLED');
     const [selfieMatchingEnabled, setSelfieMatchingEnabled] = useState(true);
 
+    // P0-1: Custom slug and short password for easy sharing
+    const [customSlug, setCustomSlug] = useState('');
+    const [customPassword, setCustomPassword] = useState('');
+    const [slugError, setSlugError] = useState('');
+
+    // P0-2: Internal notes for photographer only
+    const [internalNotes, setInternalNotes] = useState('');
+
     // Edit details state
     const [editName, setEditName] = useState('');
     const [editDescription, setEditDescription] = useState('');
@@ -58,7 +66,12 @@ export default function GalleryDetailPage() {
             setDownloadsEnabled(galleryRes.gallery.downloadsEnabled);
             setDownloadResolution(galleryRes.gallery.downloadResolution);
             setSelectionState(galleryRes.gallery.selectionState);
-            setSelfieMatchingEnabled(galleryRes.gallery.selfieMatchingEnabled ?? true);
+            setSelfieMatchingEnabled(galleryRes.gallery.selfieMatchingEnabled ?? false); // P0-3: New galleries default to false
+            // P0-1: Load custom slug and password
+            setCustomSlug(galleryRes.gallery.customSlug || '');
+            setCustomPassword(galleryRes.gallery.customPassword || '');
+            // P0-2: Load internal notes
+            setInternalNotes(galleryRes.gallery.internalNotes || '');
             // Initialize edit fields
             setEditName(galleryRes.gallery.name);
             setEditDescription(galleryRes.gallery.description || '');
@@ -372,6 +385,118 @@ export default function GalleryDetailPage() {
                                                 </div>
                                                 <p className="text-xs text-muted-foreground">Share with primary clients for full access</p>
                                             </div>
+
+                                            {/* P0-1: Custom Slug for Easy Sharing */}
+                                            <div className="space-y-2 border-t pt-4">
+                                                <Label htmlFor="custom-slug">Custom Short Link</Label>
+                                                <div className="flex gap-2">
+                                                    <Input
+                                                        id="custom-slug"
+                                                        value={customSlug}
+                                                        onChange={(e) => {
+                                                            const value = e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '');
+                                                            setCustomSlug(value);
+                                                            setSlugError('');
+                                                        }}
+                                                        placeholder="e.g., baby-ivaan"
+                                                        className="font-mono text-sm"
+                                                    />
+                                                    <Button
+                                                        variant="outline"
+                                                        disabled={!customSlug || customSlug === gallery.customSlug}
+                                                        onClick={async () => {
+                                                            if (customSlug.length < 2) {
+                                                                setSlugError('Slug must be at least 2 characters');
+                                                                return;
+                                                            }
+                                                            try {
+                                                                await galleryApi.update(galleryId, { customSlug });
+                                                                toast.success('Slug saved');
+                                                                loadGallery();
+                                                            } catch (error: any) {
+                                                                setSlugError(error.message || 'Failed to save slug');
+                                                            }
+                                                        }}
+                                                    >
+                                                        Save
+                                                    </Button>
+                                                </div>
+                                                {slugError && <p className="text-xs text-destructive">{slugError}</p>}
+                                                {customSlug && (
+                                                    <p className="text-xs text-muted-foreground">
+                                                        Preview: <span className="font-mono">{window.location.origin}/g/{customSlug}/access</span>
+                                                    </p>
+                                                )}
+                                                <p className="text-xs text-muted-foreground">Lowercase letters, numbers, and hyphens only</p>
+                                            </div>
+
+                                            {/* P0-1: Short Password for Easy Sharing */}
+                                            <div className="space-y-2">
+                                                <Label htmlFor="custom-password">Short Password</Label>
+                                                <div className="flex gap-2">
+                                                    <Input
+                                                        id="custom-password"
+                                                        value={customPassword}
+                                                        onChange={(e) => setCustomPassword(e.target.value.slice(0, 6))}
+                                                        placeholder="e.g., IV24"
+                                                        maxLength={6}
+                                                        className="font-mono text-sm"
+                                                    />
+                                                    <Button
+                                                        variant="outline"
+                                                        disabled={!customPassword || customPassword === gallery.customPassword}
+                                                        onClick={async () => {
+                                                            if (customPassword.length < 4) {
+                                                                toast.error('Password must be 4-6 characters');
+                                                                return;
+                                                            }
+                                                            try {
+                                                                await galleryApi.update(galleryId, { customPassword });
+                                                                toast.success('Password saved');
+                                                                loadGallery();
+                                                            } catch (error) {
+                                                                toast.error('Failed to save password');
+                                                            }
+                                                        }}
+                                                    >
+                                                        Save
+                                                    </Button>
+                                                </div>
+                                                <p className="text-xs text-muted-foreground">4-6 characters, easy to share verbally or via WhatsApp</p>
+                                            </div>
+
+                                            {/* P0-2: Internal Notes */}
+                                            <div className="space-y-2 border-t pt-4">
+                                                <Label htmlFor="internal-notes">Internal Notes</Label>
+                                                <textarea
+                                                    id="internal-notes"
+                                                    value={internalNotes}
+                                                    onChange={(e) => setInternalNotes(e.target.value)}
+                                                    placeholder="Private notes for yourself (e.g., parent contact, special requests)"
+                                                    className="w-full h-24 p-2 text-sm border rounded-md resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                                                    maxLength={2000}
+                                                />
+                                                <div className="flex justify-between items-center">
+                                                    <p className="text-xs text-muted-foreground">Only visible to you, never shown to clients</p>
+                                                    <Button
+                                                        variant="outline"
+                                                        size="sm"
+                                                        disabled={internalNotes === (gallery.internalNotes || '')}
+                                                        onClick={async () => {
+                                                            try {
+                                                                await galleryApi.update(galleryId, { internalNotes: internalNotes || null });
+                                                                toast.success('Notes saved');
+                                                                loadGallery();
+                                                            } catch (error) {
+                                                                toast.error('Failed to save notes');
+                                                            }
+                                                        }}
+                                                    >
+                                                        Save Notes
+                                                    </Button>
+                                                </div>
+                                            </div>
+
                                             <div className="space-y-2">
                                                 <Label>Share Link</Label>
                                                 <div className="flex gap-2">

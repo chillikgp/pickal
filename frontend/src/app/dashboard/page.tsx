@@ -25,6 +25,10 @@ export default function DashboardPage() {
     const [editName, setEditName] = useState('');
     const [editBusinessName, setEditBusinessName] = useState('');
     const [editLogoUrl, setEditLogoUrl] = useState('');
+    const [editWebsiteUrl, setEditWebsiteUrl] = useState('');
+    const [editReviewUrl, setEditReviewUrl] = useState('');
+    const [editWhatsappNumber, setEditWhatsappNumber] = useState('');
+    const [websiteUrlError, setWebsiteUrlError] = useState('');
     const [isSaving, setIsSaving] = useState(false);
 
     useEffect(() => {
@@ -44,12 +48,36 @@ export default function DashboardPage() {
             setEditName(photographer.name);
             setEditBusinessName(photographer.businessName || '');
             setEditLogoUrl(photographer.logoUrl || '');
+            setEditWebsiteUrl((photographer as any).websiteUrl || '');
+            setEditReviewUrl((photographer as any).reviewUrl || '');
+            setEditWhatsappNumber((photographer as any).whatsappNumber || '');
         }
     }, [photographer]);
+
+    // Validate website URL format
+    const validateWebsiteUrl = (url: string): boolean => {
+        if (!url.trim()) return true; // Empty is valid (optional field)
+        const pattern = /^https?:\/\/.+/i;
+        return pattern.test(url);
+    };
+
+    const handleWebsiteUrlChange = (value: string) => {
+        setEditWebsiteUrl(value);
+        if (value.trim() && !validateWebsiteUrl(value)) {
+            setWebsiteUrlError('URL must start with http:// or https://');
+        } else {
+            setWebsiteUrlError('');
+        }
+    };
 
     const handleSaveSettings = async () => {
         if (!editName.trim()) {
             toast.error('Name is required');
+            return;
+        }
+
+        if (editWebsiteUrl.trim() && !validateWebsiteUrl(editWebsiteUrl)) {
+            toast.error('Please enter a valid website URL');
             return;
         }
 
@@ -59,6 +87,9 @@ export default function DashboardPage() {
                 name: editName.trim(),
                 businessName: editBusinessName.trim() || undefined,
                 logoUrl: editLogoUrl.trim() || null,
+                websiteUrl: editWebsiteUrl.trim() || null,
+                reviewUrl: editReviewUrl.trim() || null,
+                whatsappNumber: editWhatsappNumber.trim() || null,
             });
             toast.success('Branding updated');
             setIsSettingsOpen(false);
@@ -131,6 +162,47 @@ export default function DashboardPage() {
                                         />
                                         <p className="text-xs text-muted-foreground">
                                             Direct link to your logo image (will appear as a circle)
+                                        </p>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label htmlFor="edit-website">Studio Website URL</Label>
+                                        <Input
+                                            id="edit-website"
+                                            value={editWebsiteUrl}
+                                            onChange={(e) => handleWebsiteUrlChange(e.target.value)}
+                                            placeholder="https://www.mybabypictures.in"
+                                            className={websiteUrlError ? 'border-red-500' : ''}
+                                        />
+                                        {websiteUrlError ? (
+                                            <p className="text-xs text-red-500">{websiteUrlError}</p>
+                                        ) : (
+                                            <p className="text-xs text-muted-foreground">
+                                                Optional. Your logo will link to this website on client galleries.
+                                            </p>
+                                        )}
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label htmlFor="edit-review">Review URL (Google Maps)</Label>
+                                        <Input
+                                            id="edit-review"
+                                            value={editReviewUrl}
+                                            onChange={(e) => setEditReviewUrl(e.target.value)}
+                                            placeholder="https://g.page/r/..."
+                                        />
+                                        <p className="text-xs text-muted-foreground">
+                                            Link to write a review. Enables the "Recommend" CTA.
+                                        </p>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <Label htmlFor="edit-whatsapp">WhatsApp Number</Label>
+                                        <Input
+                                            id="edit-whatsapp"
+                                            value={editWhatsappNumber}
+                                            onChange={(e) => setEditWhatsappNumber(e.target.value)}
+                                            placeholder="919876543210"
+                                        />
+                                        <p className="text-xs text-muted-foreground">
+                                            Include country code (e.g. 91 for India). Used for "Prints" & "Share" inquiries.
                                         </p>
                                     </div>
                                     {/* Preview */}

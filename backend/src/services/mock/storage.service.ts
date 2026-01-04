@@ -69,6 +69,12 @@ export class MockStorageService implements IStorageService {
             return false;
         }
     }
+
+    async getStream(key: string): Promise<import('stream').Readable> {
+        const filePath = path.join(UPLOADS_DIR, key);
+        const { createReadStream } = await import('fs');
+        return createReadStream(filePath);
+    }
 }
 
 // Singleton instance

@@ -15,14 +15,17 @@ datasource db {
 // ============================================================================
 
 model Photographer {
-  id           String    @id @default(uuid())
-  email        String    @unique
-  passwordHash String
-  name         String
-  businessName String?
-  logoUrl      String?   // S3 URL for studio logo
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id             String    @id @default(uuid())
+  email          String    @unique
+  passwordHash   String
+  name           String
+  businessName   String?
+  logoUrl        String?   // S3 URL for studio logo
+  websiteUrl     String?   // Studio website URL for clickable branding
+  reviewUrl      String?   // Google Review or similar review page URL
+  whatsappNumber String?   // WhatsApp number for inquiries (include country code)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
 
   galleries Gallery[]
 
@@ -50,6 +53,10 @@ model Gallery {
   description    String?
   eventDate      DateTime?
   
+  // P0-1: Short slug for easy sharing (unique per photographer)
+  customSlug     String?           // Optional, photographer-defined short URL slug
+  customPassword String?           // Short password (4-6 chars) for easy verbal sharing
+  
   // Access settings
   privateKey     String            @unique @default(uuid())
   accessModes    GalleryAccessMode[] @default([PRIVATE_KEY, GUEST_SELFIE])
@@ -59,10 +66,13 @@ model Gallery {
   downloadResolution  String        @default("web") // "web" or "original"
   selectionState      SelectionState @default(DISABLED)
   commentsEnabled     Boolean       @default(true)
-  selfieMatchingEnabled Boolean     @default(true) // Hard guardrail for selfie matching
+  selfieMatchingEnabled Boolean     @default(false) // P0-3: OFF by default for new galleries
   
   // Cover photo for hero section
   coverPhotoId        String?
+  
+  // P0-2: Internal notes visible only to photographer
+  internalNotes       String?
   
   // Ownership
   photographerId String
@@ -77,6 +87,7 @@ model Gallery {
   guests         Guest[]
   selfieFaces    GuestSelfieFace[]
 
+  @@unique([photographerId, customSlug]) // P0-1: Slug unique per photographer
   @@index([photographerId])
   @@index([privateKey])
   @@map("galleries")

@@ -22,10 +22,26 @@ import { getFaceRecognitionService, getStorageService } from '../services/index.
 const router = Router();
 
 // Validation schemas
+// P0-1: Slug validation - lowercase, numbers, hyphens only, no spaces
+const slugRegex = /^[a-z0-9-]+$/;
+
 const createGallerySchema = z.object({
     name: z.string().min(1).max(100),
     description: z.string().max(500).optional(),
     eventDate: z.string().datetime().optional(),
+    // P0-1: Custom slug for short URL
+    customSlug: z.string()
+        .min(2, 'Slug must be at least 2 characters')
+        .max(50, 'Slug must be at most 50 characters')
+        .regex(slugRegex, 'Slug must be lowercase letters, numbers, and hyphens only')
+        .optional(),
+    // P0-1: Short password (4-6 characters for easy verbal sharing)
+    customPassword: z.string()
+        .min(4, 'Password must be at least 4 characters')
+        .max(6, 'Password must be at most 6 characters')
+        .optional(),
+    // P0-2: Internal notes for photographer only
+    internalNotes: z.string().max(2000).optional(),
 });
 
 const updateGallerySchema = z.object({
@@ -38,10 +54,26 @@ const updateGallerySchema = z.object({
     commentsEnabled: z.boolean().optional(),
     selfieMatchingEnabled: z.boolean().optional(),
     coverPhotoId: z.string().uuid().nullable().optional(),
+    // P0-1: Custom slug for short URL
+    customSlug: z.string()
+        .min(2, 'Slug must be at least 2 characters')
+        .max(50, 'Slug must be at most 50 characters')
+        .regex(slugRegex, 'Slug must be lowercase letters, numbers, and hyphens only')
+        .nullable()
+        .optional(),
+    // P0-1: Short password (4-6 characters for easy verbal sharing)
+    customPassword: z.string()
+        .min(4, 'Password must be at least 4 characters')
+        .max(6, 'Password must be at most 6 characters')
+        .nullable()
+        .optional(),
+    // P0-2: Internal notes for photographer only
+    internalNotes: z.string().max(2000).nullable().optional(),
 });
 
+// P0-1: Access schema supports both UUID privateKey and short password
 const accessGallerySchema = z.object({
-    privateKey: z.string().uuid(),
+    privateKey: z.string().min(1), // Accept any string (UUID or short password)
     clientName: z.string().optional(),
     clientEmail: z.string().email().optional(),
 });
@@ -51,7 +83,7 @@ const accessGallerySchema = z.object({
 
 /**
  * GET /api/galleries/:id/public-config
- * Public endpoint to get gallery feature flags for guest access page.
+ * Public endpoint to get gallery feature flags and branding for access page.
  * Returns only safe, non-sensitive configuration.
  * 
  * This endpoint is INTENTIONALLY unauthenticated.
@@ -64,9 +96,22 @@ router.get('/:id/public-config', async (req: AuthenticatedRequest, res: Response
             where: { id },
             select: {
                 id: true,
+                name: true,
+                eventDate: true,
                 selfieMatchingEnabled: true,
                 downloadsEnabled: true,
                 accessModes: true,
+                coverPhotoId: true,
+                photographer: {
+                    select: {
+                        name: true,
+                        businessName: true,
+                        logoUrl: true,
+                        websiteUrl: true,
+                        reviewUrl: true,
+                        whatsappNumber: true,
+                    },
+                },
             },
         });
 
@@ -74,13 +119,72 @@ router.get('/:id/public-config', async (req: AuthenticatedRequest, res: Response
             throw notFound('Gallery not found');
         }
 
+        // Get cover photo URL if exists
+        let coverPhotoUrl: string | null = null;
+        if (gallery.coverPhotoId) {
+            const coverPhoto = await prisma.photo.findUnique({
+                where: { id: gallery.coverPhotoId },
+                select: { webKey: true },
+            });
+            if (coverPhoto) {
+                const storageService = getStorageService();
+                coverPhotoUrl = await storageService.getSignedUrl(coverPhoto.webKey, 3600);
+            }
+        }
+
         console.log(`[PUBLIC] Config request for gallery ${id}: selfieMatchingEnabled=${gallery.selfieMatchingEnabled}`);
 
         res.json({
             galleryId: gallery.id,
+            galleryName: gallery.name,
+            eventDate: gallery.eventDate,
+            coverPhotoUrl,
             selfieMatchingEnabled: gallery.selfieMatchingEnabled,
             downloadsEnabled: gallery.downloadsEnabled,
             accessModes: gallery.accessModes,
+            studio: {
+                name: gallery.photographer.businessName || gallery.photographer.name,
+                logoUrl: gallery.photographer.logoUrl,
+                websiteUrl: gallery.photographer.websiteUrl,
+                reviewUrl: gallery.photographer.reviewUrl,
+                whatsappNumber: gallery.photographer.whatsappNumber,
+            },
+        });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * GET /api/galleries/by-slug/:slug
+ * P0-1: Look up a gallery by its custom slug
+ * Returns only the gallery ID for redirection, no sensitive data
+ * 
+ * This endpoint is INTENTIONALLY unauthenticated.
+ */
+router.get('/by-slug/:slug', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    try {
+        const { slug } = req.params;
+
+        // Find gallery by slug (slug is unique per photographer, but we return the first match)
+        const gallery = await prisma.gallery.findFirst({
+            where: { customSlug: slug },
+            select: {
+                id: true,
+                name: true,
+                customSlug: true,
+            },
+        });
+
+        if (!gallery) {
+            throw notFound('Gallery not found');
+        }
+
+        console.log(`[PUBLIC] Slug lookup: ${slug} -> gallery ${gallery.id}`);
+
+        res.json({
+            galleryId: gallery.id,
+            name: gallery.name,
         });
     } catch (error) {
         next(error);
@@ -135,12 +239,30 @@ router.post('/', requirePhotographer, async (req: AuthenticatedRequest, res: Res
     try {
         const data = createGallerySchema.parse(req.body);
 
+        // P0-1: Validate slug uniqueness for this photographer if provided
+        if (data.customSlug) {
+            const existingSlug = await prisma.gallery.findFirst({
+                where: {
+                    photographerId: req.photographer!.id,
+                    customSlug: data.customSlug,
+                },
+            });
+            if (existingSlug) {
+                throw badRequest('This slug is already in use. Please choose a different one.');
+            }
+        }
+
         const gallery = await prisma.gallery.create({
             data: {
                 name: data.name,
                 description: data.description,
                 eventDate: data.eventDate ? new Date(data.eventDate) : undefined,
                 photographerId: req.photographer!.id,
+                // P0-1: Short URL slug and password
+                customSlug: data.customSlug,
+                customPassword: data.customPassword,
+                // P0-2: Internal notes
+                internalNotes: data.internalNotes,
             },
             select: {
                 id: true,
@@ -153,6 +275,10 @@ router.post('/', requirePhotographer, async (req: AuthenticatedRequest, res: Res
                 downloadResolution: true,
                 selectionState: true,
                 commentsEnabled: true,
+                selfieMatchingEnabled: true,
+                customSlug: true,
+                customPassword: true,
+                internalNotes: true,
                 createdAt: true,
             },
         });
@@ -182,6 +308,11 @@ router.get('/:id', requireAnyAuth, async (req: AuthenticatedRequest, res: Respon
             include: {
                 sections: {
                     orderBy: { sortOrder: 'asc' },
+                    include: {
+                        _count: {
+                            select: { photos: true },
+                        },
+                    },
                 },
                 photographer: {
                     select: {
@@ -189,6 +320,9 @@ router.get('/:id', requireAnyAuth, async (req: AuthenticatedRequest, res: Respon
                         name: true,
                         businessName: true,
                         logoUrl: true,
+                        websiteUrl: true,
+                        reviewUrl: true,
+                        whatsappNumber: true,
                     },
                 },
                 _count: {
@@ -247,11 +381,14 @@ router.get('/:id', requireAnyAuth, async (req: AuthenticatedRequest, res: Respon
             }
         }
 
-        // Remove private key for non-photographer users
+        // P0-2: Remove internal notes and sensitive fields for non-photographer users
         const response = {
             ...gallery,
             coverPhoto,
-            privateKey: req.userRole === 'photographer' ? gallery.privateKey : undefined,
+            // P0-1: Allow authorized users (EXCEPT guests) to see access credentials for sharing
+            privateKey: req.userRole !== 'guest' ? gallery.privateKey : undefined,
+            customPassword: req.userRole !== 'guest' ? gallery.customPassword : undefined,
+            internalNotes: req.userRole === 'photographer' ? gallery.internalNotes : undefined,
         };
 
         res.json({ gallery: response });
@@ -273,7 +410,7 @@ router.patch('/:id', requirePhotographer, async (req: AuthenticatedRequest, res:
         // Verify ownership
         const existing = await prisma.gallery.findUnique({
             where: { id },
-            select: { photographerId: true },
+            select: { photographerId: true, customSlug: true },
         });
 
         if (!existing) {
@@ -282,6 +419,20 @@ router.patch('/:id', requirePhotographer, async (req: AuthenticatedRequest, res:
 
         if (existing.photographerId !== req.photographer!.id) {
             throw forbidden('You do not own this gallery');
+        }
+
+        // P0-1: Validate slug uniqueness if changing to a new value
+        if (data.customSlug && data.customSlug !== existing.customSlug) {
+            const duplicateSlug = await prisma.gallery.findFirst({
+                where: {
+                    photographerId: req.photographer!.id,
+                    customSlug: data.customSlug,
+                    id: { not: id }, // Exclude current gallery
+                },
+            });
+            if (duplicateSlug) {
+                throw badRequest('This slug is already in use. Please choose a different one.');
+            }
         }
 
         const gallery = await prisma.gallery.update({
@@ -296,6 +447,11 @@ router.patch('/:id', requirePhotographer, async (req: AuthenticatedRequest, res:
                 commentsEnabled: data.commentsEnabled,
                 selfieMatchingEnabled: data.selfieMatchingEnabled,
                 coverPhotoId: data.coverPhotoId,
+                // P0-1: Custom slug and password
+                customSlug: data.customSlug,
+                customPassword: data.customPassword,
+                // P0-2: Internal notes
+                internalNotes: data.internalNotes,
             },
         });
 
@@ -349,7 +505,7 @@ router.delete('/:id', requirePhotographer, async (req: AuthenticatedRequest, res
 
 /**
  * POST /api/galleries/:id/access
- * Access a gallery with private key
+ * Access a gallery with private key OR short password (P0-1)
  * Creates a primary client session
  */
 router.post('/:id/access', async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
@@ -357,12 +513,13 @@ router.post('/:id/access', async (req: AuthenticatedRequest, res: Response, next
         const { id } = req.params;
         const data = accessGallerySchema.parse(req.body);
 
-        // Find gallery by id and verify private key
+        // Find gallery by id and check access credentials
         const gallery = await prisma.gallery.findUnique({
             where: { id },
             select: {
                 id: true,
                 privateKey: true,
+                customPassword: true, // P0-1: Short password support
                 name: true,
                 accessModes: true,
             },
@@ -372,7 +529,12 @@ router.post('/:id/access', async (req: AuthenticatedRequest, res: Response, next
             throw notFound('Gallery not found');
         }
 
-        if (gallery.privateKey !== data.privateKey) {
+        // P0-1: Check if provided key matches either privateKey (UUID) or customPassword (short)
+        const isValidAccess =
+            gallery.privateKey === data.privateKey ||
+            (gallery.customPassword && gallery.customPassword === data.privateKey);
+
+        if (!isValidAccess) {
             throw forbidden('Invalid access key');
         }
 

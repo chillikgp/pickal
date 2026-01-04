@@ -124,7 +124,14 @@ export const authApi = {
 
     me: () => apiRequest<{ photographer: Photographer }>('/api/auth/me'),
 
-    updateProfile: (data: { name?: string; businessName?: string; logoUrl?: string | null }) =>
+    updateProfile: (data: {
+        name?: string;
+        businessName?: string;
+        logoUrl?: string | null;
+        websiteUrl?: string | null;
+        reviewUrl?: string | null;
+        whatsappNumber?: string | null;
+    }) =>
         apiRequest<{ photographer: Photographer }>('/api/auth/profile', { method: 'PATCH', body: data }),
 };
 
@@ -138,6 +145,11 @@ export interface Gallery {
     description?: string;
     eventDate?: string;
     privateKey?: string;
+    // P0-1: Custom slug and short password for easy sharing
+    customSlug?: string | null;
+    customPassword?: string | null;
+    // P0-2: Internal notes visible only to photographer
+    internalNotes?: string | null;
     downloadsEnabled: boolean;
     downloadResolution: 'web' | 'original';
     selectionState: 'DISABLED' | 'OPEN' | 'LOCKED';
@@ -150,6 +162,9 @@ export interface Gallery {
         name: string;
         businessName?: string;
         logoUrl?: string;
+        websiteUrl?: string;
+        reviewUrl?: string;
+        whatsappNumber?: string;
     };
     createdAt: string;
     updatedAt: string;
@@ -167,6 +182,9 @@ export interface Section {
     name: string;
     description?: string;
     sortOrder: number;
+    _count?: {
+        photos: number;
+    };
 }
 
 export const galleryApi = {
@@ -175,7 +193,18 @@ export const galleryApi = {
     get: (id: string, useSession = false) =>
         apiRequest<{ gallery: Gallery }>(`/api/galleries/${id}`, { useSession, useAuth: !useSession }),
 
-    create: (data: { name: string; description?: string; eventDate?: string }) =>
+    // P0-1: Look up gallery by custom slug
+    getBySlug: (slug: string) =>
+        apiRequest<{ galleryId: string; name: string }>(`/api/galleries/by-slug/${slug}`, { useAuth: false }),
+
+    create: (data: {
+        name: string;
+        description?: string;
+        eventDate?: string;
+        customSlug?: string;
+        customPassword?: string;
+        internalNotes?: string;
+    }) =>
         apiRequest<{ gallery: Gallery }>('/api/galleries', { method: 'POST', body: data }),
 
     update: (id: string, data: Partial<Gallery>) =>
@@ -197,7 +226,22 @@ export const galleryApi = {
         apiRequest<{ selections: unknown[]; summary: unknown }>(`/api/galleries/${id}/selections`),
 
     getPublicConfig: (id: string) =>
-        apiRequest<{ galleryId: string; selfieMatchingEnabled: boolean; downloadsEnabled: boolean; accessModes: string[] }>(
+        apiRequest<{
+            galleryId: string;
+            galleryName: string;
+            eventDate: string | null;
+            coverPhotoUrl: string | null;
+            selfieMatchingEnabled: boolean;
+            downloadsEnabled: boolean;
+            accessModes: string[];
+            studio: {
+                name: string;
+                logoUrl: string | null;
+                websiteUrl: string | null;
+                reviewUrl: string | null;
+                whatsappNumber: string | null;
+            };
+        }>(
             `/api/galleries/${id}/public-config`,
             { useAuth: false }
         ),
@@ -240,14 +284,28 @@ export const photoApi = {
         return apiRequest<{ success: boolean; count: number; photos: Photo[] }>('/api/photos/upload', { method: 'POST', body: formData });
     },
 
-    getByGallery: (galleryId: string, useSession = false) =>
-        apiRequest<{ photos: Photo[] }>(`/api/photos/gallery/${galleryId}`, { useSession }),
+    getByGallery: (galleryId: string, params: { sectionId?: string; cursor?: string; limit?: number } = {}, useSession = false) => {
+        const query = new URLSearchParams();
+        if (params.sectionId) query.append('sectionId', params.sectionId);
+        if (params.cursor) query.append('cursor', params.cursor);
+        if (params.limit) query.append('limit', params.limit.toString());
+        const qs = query.toString();
+        return apiRequest<{ photos: Photo[]; nextCursor: string | null }>(`/api/photos/gallery/${galleryId}${qs ? `?${qs}` : ''}`, { useSession });
+    },
 
     get: (id: string, useSession = false) =>
         apiRequest<{ photo: Photo }>(`/api/photos/${id}`, { useSession }),
 
     download: (id: string, useSession = false) =>
         apiRequest<{ downloadUrl: string }>(`/api/photos/${id}/download`, { useSession }),
+
+    // P0-5: Download all photos in a gallery
+    downloadAll: (galleryId: string, useSession = false) =>
+        apiRequest<{
+            galleryName: string;
+            photos: { id: string; filename: string; downloadUrl: string }[];
+            totalCount: number;
+        }>(`/api/photos/gallery/${galleryId}/download-all`, { useSession }),
 
     delete: (id: string) =>
         apiRequest<{ success: boolean }>(`/api/photos/${id}`, { method: 'DELETE' }),

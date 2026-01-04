@@ -6,6 +6,8 @@
  * - S3StorageService: AWS S3 + CloudFront for production
  */
 
+import { Readable } from 'stream';
+
 export type StorageBucket = 'originals' | 'web' | 'lqip';
 
 export interface UploadResult {
@@ -33,6 +35,14 @@ export interface IStorageService {
     getSignedUrl(key: string, expiresIn?: number): Promise<string>;
 
     /**
+     * Get a readable stream for a file (for server-side processing)
+     * Used for ZIP streaming to avoid CORS issues with browser downloads
+     * @param key - Storage key of the file
+     * @returns Readable stream of file contents
+     */
+    getStream(key: string): Promise<Readable>;
+
+    /**
      * Delete a file from storage
      * @param key - Storage key of the file to delete
      */
@@ -44,3 +54,4 @@ export interface IStorageService {
      */
     exists(key: string): Promise<boolean>;
 }
+

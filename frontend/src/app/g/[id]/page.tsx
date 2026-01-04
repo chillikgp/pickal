@@ -14,6 +14,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 import { GalleryHeader } from '@/components/GalleryHeader';
+import { GalleryNextSteps } from '@/components/GalleryNextSteps';
 
 export default function ClientGalleryPage() {
     const params = useParams();
@@ -21,7 +22,14 @@ export default function ClientGalleryPage() {
     const galleryId = params.id as string;
 
     const [gallery, setGallery] = useState<Gallery | null>(null);
-    const [photos, setPhotos] = useState<Photo[]>([]);
+    // Pagination State
+    const [sectionData, setSectionData] = useState<Record<string, {
+        photos: Photo[];
+        nextCursor: string | null;
+        isLoading: boolean;
+        isInitialized: boolean;
+    }>>({});
+    const [isLoadingMore, setIsLoadingMore] = useState(false);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [isLoading, setIsLoading] = useState(true);
     const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
@@ -60,8 +68,12 @@ export default function ClientGalleryPage() {
     // Favorites filter state
     const [showFavoritesOnly, setShowFavoritesOnly] = useState(false);
 
+    // P0-5: Download all state
+    const [isDownloading, setIsDownloading] = useState(false);
+
     // Ref for smooth scroll to gallery
     const galleryGridRef = useRef<HTMLDivElement>(null);
+    const galleryStartRef = useRef<HTMLDivElement>(null); // Anchor for "Back to Top"
 
     const loadData = useCallback(async () => {
         const token = getSessionToken();
@@ -71,22 +83,35 @@ export default function ClientGalleryPage() {
         }
 
         try {
+            // Initial load gets Gallery info and First page of "All" photos
             const [galleryRes, photosRes, selectionsRes] = await Promise.all([
                 galleryApi.get(galleryId, true),
-                photoApi.getByGallery(galleryId, true),
+                photoApi.getByGallery(galleryId, { limit: 50 }, true),
                 selectionApi.getMy().catch(() => ({ selections: [] })),
             ]);
 
             setGallery(galleryRes.gallery);
-            setPhotos(photosRes.photos);
+
+            // Initialize 'all' section with first page
+            setSectionData(prev => ({
+                ...prev,
+                'all': {
+                    photos: photosRes.photos,
+                    nextCursor: photosRes.nextCursor,
+                    isLoading: false,
+                    isInitialized: true
+                }
+            }));
+
             setSelectedIds(new Set(selectionsRes.selections.map(s => s.photoId)));
 
             // Check if this is a guest session
             // Guest detection now handled by selfie presence check in useEffect
             // so we don't override isPrimaryClient here
         } catch (error) {
+            console.error('Failed to load gallery:', error);
             toast.error('Failed to load gallery');
-            router.push(`/g/${galleryId}/access`);
+            // router.push(`/g/${galleryId}/access`); // Don't redirect on error instantly, allows retry
         } finally {
             setIsLoading(false);
         }
@@ -95,6 +120,150 @@ export default function ClientGalleryPage() {
     useEffect(() => {
         loadData();
     }, [loadData]);
+
+    // P2: Load data for a specific section (initial or next page)
+    const loadSectionItems = useCallback(async (sectionId: string, cursor?: string | null) => {
+        try {
+            // Set loading state
+            setSectionData(prev => ({
+                ...prev,
+                [sectionId]: {
+                    ...(prev[sectionId] || { photos: [], nextCursor: null, isInitialized: false }),
+                    isLoading: true,
+                }
+            }));
+
+            const res = await photoApi.getByGallery(galleryId, {
+                sectionId,
+                cursor: cursor || undefined,
+                limit: 50
+            }, true);
+
+            setSectionData(prev => {
+                const existing = prev[sectionId] || { photos: [] };
+
+                // Append if cursor exists (load more), otherwise replace (initial load for section)
+                // Note: If cursor is passed, we append. If not, we overwrite (fresh section load).
+                const newPhotos = cursor
+                    ? [...existing.photos, ...res.photos]
+                    : res.photos;
+
+                return {
+                    ...prev,
+                    [sectionId]: {
+                        photos: newPhotos,
+                        nextCursor: res.nextCursor,
+                        isLoading: false,
+                        isInitialized: true
+                    }
+                };
+            });
+
+        } catch (error) {
+            console.error('Failed to load photos:', error);
+            toast.error('Failed to load photos');
+            setSectionData(prev => ({
+                ...prev,
+                [sectionId]: {
+                    ...(prev[sectionId] || { photos: [], nextCursor: null, isInitialized: false }),
+                    isLoading: false,
+                    // keep isInitialized false so we can retry? Or true to stop retrying loop?
+                    // Let's keep it as before or set isInitialized true to prevent infinite loop.
+                    isInitialized: true
+                }
+            }));
+        }
+    }, [galleryId]);
+
+    // P2: Handle section switch with scroll
+    const handleSectionChange = useCallback((sectionId: string) => {
+        setActiveSection(sectionId);
+
+        // Scroll to top of grid
+        if (galleryStartRef.current) {
+            galleryStartRef.current.scrollIntoView({ behavior: 'smooth' });
+        } else {
+            galleryGridRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
+
+    }, []);
+
+    // P2: Fetch data when section changes
+    useEffect(() => {
+        if (activeSection !== 'all' && !sectionData[activeSection]?.isInitialized && !sectionData[activeSection]?.isLoading) {
+            loadSectionItems(activeSection);
+        }
+    }, [activeSection, sectionData, loadSectionItems]);
+
+    // P0-5: Download all photos as ZIP
+    // Server streams ZIP directly - no CORS issues since backend-to-S3 is not browser-initiated
+    const handleDownloadAll = useCallback(async () => {
+        if (isDownloading) return;
+
+        setIsDownloading(true);
+        try {
+            toast.info('Preparing your download... This may take a moment.');
+
+            // Get the session token for authentication
+            const token = getSessionToken();
+            if (!token) {
+                toast.error('Please log in to download photos');
+                setIsDownloading(false);
+                return;
+            }
+
+            // Build the download URL with auth token
+            const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+            const downloadUrl = `${API_URL}/api/photos/gallery/${galleryId}/download-all`;
+
+            // Use fetch with streaming to handle the download
+            // This allows us to show progress and handle errors properly
+            const response = await fetch(downloadUrl, {
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                },
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                // Handle both string and object error formats
+                const message =
+                    typeof errorData.error === 'string'
+                        ? errorData.error
+                        : (errorData.error?.message || errorData.message || 'Download failed');
+                throw new Error(message);
+            }
+
+            // Get filename from Content-Disposition header
+            const contentDisposition = response.headers.get('Content-Disposition');
+            const filenameMatch = contentDisposition?.match(/filename="?([^"]+)"?/);
+            const filename = filenameMatch?.[1] || 'gallery.zip';
+
+            // Convert response to blob
+            const blob = await response.blob();
+
+            // Create download link
+            const blobUrl = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = blobUrl;
+            link.download = filename;
+            link.style.display = 'none';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            // Clean up
+            URL.revokeObjectURL(blobUrl);
+
+            toast.success('Download complete!');
+        } catch (error: any) {
+            console.error('[DOWNLOAD_ALL] Error:', error);
+            toast.error(error.message || 'Failed to download photos');
+        } finally {
+            setIsDownloading(false);
+        }
+    }, [galleryId, isDownloading]);
 
     // Load guest selfie from sessionStorage
     useEffect(() => {
@@ -114,11 +283,32 @@ export default function ClientGalleryPage() {
         }
     }, [selectedPhoto]);
 
-    // Filter photos by section and favorites
+    // P2: Pagination Logic
     const sections = gallery?.sections || [];
-    let filteredPhotos = activeSection === 'all'
-        ? photos
-        : photos.filter(p => p.sectionId === activeSection);
+    const currentSectionState = sectionData[activeSection] || { photos: [], nextCursor: null, isLoading: false, isInitialized: false };
+
+    // Use the loaded photos for the current section
+    let filteredPhotos = currentSectionState.photos || [];
+
+    // Infinite Scroll Observer
+    useEffect(() => {
+        const observer = new IntersectionObserver(
+            (entries) => {
+                if (entries[0].isIntersecting &&
+                    currentSectionState.nextCursor &&
+                    !currentSectionState.isLoading
+                ) {
+                    loadSectionItems(activeSection, currentSectionState.nextCursor);
+                }
+            },
+            { threshold: 0.1, rootMargin: '400px' }
+        );
+
+        const sentinel = document.getElementById('scroll-sentinel');
+        if (sentinel) observer.observe(sentinel);
+
+        return () => observer.disconnect();
+    }, [activeSection, currentSectionState, loadSectionItems]);
 
     // Apply favorites filter if enabled
     if (showFavoritesOnly) {
@@ -397,8 +587,14 @@ export default function ClientGalleryPage() {
         }).toUpperCase()
         : null;
 
+    // Scroll to the top of the photo grid (accounting for sticky header)
     const scrollToGallery = () => {
-        galleryGridRef.current?.scrollIntoView({ behavior: 'smooth' });
+        if (galleryStartRef.current) {
+            galleryStartRef.current.scrollIntoView({ behavior: 'smooth' });
+        } else {
+            // Fallback
+            galleryGridRef.current?.scrollIntoView({ behavior: 'smooth' });
+        }
     };
 
     return (
@@ -446,29 +642,65 @@ export default function ClientGalleryPage() {
                     {/* Studio Branding - Bottom Center */}
                     {gallery.photographer && (
                         <div className="absolute bottom-8 left-0 right-0 flex flex-col items-center text-white/80">
-                            {/* Studio Logo or Initials */}
-                            {gallery.photographer.logoUrl ? (
-                                <img
-                                    src={gallery.photographer.logoUrl}
-                                    alt={gallery.photographer.businessName || gallery.photographer.name}
-                                    className="w-12 h-12 rounded-full object-cover mb-2 border border-white/20"
-                                />
-                            ) : (
-                                <div className="w-12 h-12 rounded-full bg-white/10 backdrop-blur-sm border border-white/20 flex items-center justify-center mb-2">
-                                    <span className="text-sm font-medium text-white/80">
-                                        {(gallery.photographer.businessName || gallery.photographer.name)
-                                            .split(' ')
-                                            .map(word => word[0])
-                                            .join('')
-                                            .slice(0, 2)
-                                            .toUpperCase()}
+                            {/* Content Wrapper - Clickable if websiteUrl exists */}
+                            {gallery.photographer.websiteUrl ? (
+                                <a
+                                    href={gallery.photographer.websiteUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex flex-col items-center group cursor-pointer hover:opacity-90 transition-opacity"
+                                >
+                                    {/* Studio Logo or Initials */}
+                                    {gallery.photographer.logoUrl ? (
+                                        <img
+                                            src={gallery.photographer.logoUrl}
+                                            alt={gallery.photographer.businessName || gallery.photographer.name}
+                                            className="w-12 h-12 rounded-full object-cover mb-2 border border-white/20 group-hover:border-white/40 transition-colors"
+                                        />
+                                    ) : (
+                                        <div className="w-12 h-12 rounded-full bg-white/10 backdrop-blur-sm border border-white/20 flex items-center justify-center mb-2 group-hover:border-white/40 transition-colors">
+                                            <span className="text-sm font-medium text-white/80">
+                                                {(gallery.photographer.businessName || gallery.photographer.name)
+                                                    .split(' ')
+                                                    .map(word => word[0])
+                                                    .join('')
+                                                    .slice(0, 2)
+                                                    .toUpperCase()}
+                                            </span>
+                                        </div>
+                                    )}
+                                    {/* Studio Name */}
+                                    <span className="text-xs tracking-[0.15em] uppercase font-light">
+                                        {gallery.photographer.businessName || gallery.photographer.name}
                                     </span>
-                                </div>
+                                </a>
+                            ) : (
+                                <>
+                                    {/* Studio Logo or Initials - Static */}
+                                    {gallery.photographer.logoUrl ? (
+                                        <img
+                                            src={gallery.photographer.logoUrl}
+                                            alt={gallery.photographer.businessName || gallery.photographer.name}
+                                            className="w-12 h-12 rounded-full object-cover mb-2 border border-white/20"
+                                        />
+                                    ) : (
+                                        <div className="w-12 h-12 rounded-full bg-white/10 backdrop-blur-sm border border-white/20 flex items-center justify-center mb-2">
+                                            <span className="text-sm font-medium text-white/80">
+                                                {(gallery.photographer.businessName || gallery.photographer.name)
+                                                    .split(' ')
+                                                    .map(word => word[0])
+                                                    .join('')
+                                                    .slice(0, 2)
+                                                    .toUpperCase()}
+                                            </span>
+                                        </div>
+                                    )}
+                                    {/* Studio Name */}
+                                    <span className="text-xs tracking-[0.15em] uppercase font-light">
+                                        {gallery.photographer.businessName || gallery.photographer.name}
+                                    </span>
+                                </>
                             )}
-                            {/* Studio Name */}
-                            <span className="text-xs tracking-[0.15em] uppercase font-light">
-                                {gallery.photographer.businessName || gallery.photographer.name}
-                            </span>
                         </div>
                     )}
                 </section>
@@ -478,15 +710,22 @@ export default function ClientGalleryPage() {
             <GalleryHeader
                 gallery={gallery}
                 sections={sections}
-                photos={photos}
+                photos={filteredPhotos}
                 activeSection={activeSection}
-                setActiveSection={setActiveSection}
+                setActiveSection={handleSectionChange} // P2: Use handler with scroll logic
                 selectedIds={selectedIds}
                 showFavoritesOnly={showFavoritesOnly}
                 setShowFavoritesOnly={setShowFavoritesOnly}
-                onStartSlideshow={() => startSlideshow(0, 'grid')}
-                canDownload={canDownload}
-                canSelect={canSelect}
+                onStartSlideshow={() => {
+                    setSlideshowLaunchedFrom('grid');
+                    setSlideshowIndex(0);
+                    setSlideshowActive(true);
+                }}
+                onDownloadAll={handleDownloadAll}
+                isDownloading={isDownloading}
+                canDownload={gallery.downloadsEnabled}
+                canSelect={gallery.selectionState !== 'DISABLED'}
+                totalPhotoCount={gallery._count?.photos || 0}
             />
 
             {/* Guest Selfie Card - Shown if guest uploaded a selfie */}
@@ -555,6 +794,9 @@ export default function ClientGalleryPage() {
             )}
 
             <main ref={galleryGridRef} className="container mx-auto px-4 py-8">
+
+                {/* Scroll Anchor for Back to Top - accounts for sticky header height */}
+                <div ref={galleryStartRef} className="scroll-mt-32" />
 
                 {/* Photo Grid */}
                 {filteredPhotos.length === 0 ? (
@@ -646,6 +888,46 @@ export default function ClientGalleryPage() {
                             );
                         })}
                     </div>
+                )}
+
+                {/* P2: Infinite Scroll Sentinel & Loader */}
+                <div id="scroll-sentinel" className="h-4 w-full" />
+
+                {currentSectionState.isLoading && (
+                    <div className="flex flex-col items-center justify-center py-8 gap-3 opacity-60">
+                        <div className="w-8 h-8 rounded-full border-2 border-gray-300 border-t-gray-800 animate-spin" />
+                        <span className="text-xs uppercase tracking-widest text-gray-400">Loading Photos...</span>
+                    </div>
+                )}
+
+                {/* Back to Top CTA */}
+                {filteredPhotos.length > 10 && (
+                    <div className="flex justify-center py-12 pb-4">
+                        <button
+                            onClick={scrollToGallery}
+                            className="bg-gray-100/50 hover:bg-gray-100 text-gray-400 hover:text-gray-600 px-6 py-3 rounded-full text-xs font-medium tracking-[0.1em] transition-all duration-300"
+                            aria-label="Back to top of gallery"
+                        >
+                            [ BACK TO TOP ]
+                        </button>
+                    </div>
+                )}
+
+
+                {/* What's Next CTA Section */}
+                {gallery.photographer && (
+                    <GalleryNextSteps
+                        galleryName={gallery.name}
+                        gallerySlug={gallery.customSlug || gallery.id}
+                        accessCode={gallery.customPassword || gallery.privateKey?.slice(0, 8).toUpperCase() || undefined}
+                        studio={{
+                            name: gallery.photographer.businessName || gallery.photographer.name,
+                            logoUrl: gallery.photographer.logoUrl || null,
+                            websiteUrl: gallery.photographer.websiteUrl || null,
+                            reviewUrl: gallery.photographer.reviewUrl || null,
+                            whatsappNumber: gallery.photographer.whatsappNumber || null,
+                        }}
+                    />
                 )}
             </main>
 

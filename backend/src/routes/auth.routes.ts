@@ -33,6 +33,9 @@ const updateProfileSchema = z.object({
     name: z.string().min(1).optional(),
     businessName: z.string().optional(),
     logoUrl: z.string().url().optional().nullable(),
+    websiteUrl: z.string().url().optional().nullable(),
+    reviewUrl: z.string().url().optional().nullable(),
+    whatsappNumber: z.string().optional().nullable(),
 });
 
 // Helper to generate JWT
@@ -83,6 +86,7 @@ router.post('/register', async (req: Request, res: Response, next: NextFunction)
                 name: true,
                 businessName: true,
                 logoUrl: true,
+                websiteUrl: true,
                 createdAt: true,
             },
         });
@@ -137,6 +141,9 @@ router.post('/login', async (req: Request, res: Response, next: NextFunction) =>
                 name: photographer.name,
                 businessName: photographer.businessName,
                 logoUrl: photographer.logoUrl,
+                websiteUrl: photographer.websiteUrl,
+                reviewUrl: photographer.reviewUrl,
+                whatsappNumber: photographer.whatsappNumber,
             },
             token,
         });
@@ -163,6 +170,9 @@ router.get('/me', requirePhotographer, async (req: AuthenticatedRequest, res: Re
                 name: true,
                 businessName: true,
                 logoUrl: true,
+                websiteUrl: true,
+                reviewUrl: true,
+                whatsappNumber: true,
                 createdAt: true,
                 _count: {
                     select: { galleries: true },
@@ -190,6 +200,9 @@ router.patch('/profile', requirePhotographer, async (req: AuthenticatedRequest, 
                 name: data.name,
                 businessName: data.businessName,
                 logoUrl: data.logoUrl,
+                websiteUrl: data.websiteUrl,
+                reviewUrl: data.reviewUrl,
+                whatsappNumber: data.whatsappNumber,
             },
             select: {
                 id: true,
@@ -197,6 +210,9 @@ router.patch('/profile', requirePhotographer, async (req: AuthenticatedRequest, 
                 name: true,
                 businessName: true,
                 logoUrl: true,
+                websiteUrl: true,
+                reviewUrl: true,
+                whatsappNumber: true,
                 createdAt: true,
             },
         });

@@ -217,10 +217,11 @@ router.post(
 router.get('/gallery/:galleryId', requireAnyAuth, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     try {
         const { galleryId } = req.params;
-        console.log(`[PHOTOS] GET /gallery/${galleryId} - userRole: ${req.userRole}`);
-        if (req.guest) {
-            console.log(`[PHOTOS] Guest session found - matchedPhotoIds: ${JSON.stringify(req.guest.matchedPhotoIds)}`);
-        }
+        const cursor = req.query.cursor as string | undefined;
+        const limit = parseInt(req.query.limit as string || '50', 10);
+        const sectionId = req.query.sectionId as string | undefined;
+
+        console.log(`[PHOTOS] GET /gallery/${galleryId} - cursor:${cursor} limit:${limit} section:${sectionId}`);
 
         // Verify access
         const gallery = await prisma.gallery.findUnique({
@@ -247,9 +248,32 @@ router.get('/gallery/:galleryId', requireAnyAuth, async (req: AuthenticatedReque
             }
         }
 
-        // Get photos
-        let photos = await prisma.photo.findMany({
-            where: { galleryId },
+        // Build query
+        const where: any = { galleryId };
+
+        // PERMISSION: Guests can only see their matched photos
+        // Optimized: Database-level filtering instead of in-memory
+        if (req.userRole === 'guest') {
+            const matchedIds = req.guest!.matchedPhotoIds;
+            if (!matchedIds || matchedIds.length === 0) {
+                // Determine if we should show ANY photos?
+                // If matchedIds is empty, guest sees nothing.
+                return res.json({ photos: [], nextCursor: null });
+            }
+            where.id = { in: matchedIds };
+        }
+
+        // Filter by section if provided
+        if (sectionId && sectionId !== 'all') {
+            where.sectionId = sectionId;
+        }
+
+        // Get photos with cursor pagination
+        const items = await prisma.photo.findMany({
+            where,
+            take: limit + 1, // Fetch one extra to check for next page
+            skip: cursor ? 1 : 0,
+            cursor: cursor ? { id: cursor } : undefined,
             select: {
                 id: true,
                 filename: true,
@@ -270,28 +294,30 @@ router.get('/gallery/:galleryId', requireAnyAuth, async (req: AuthenticatedReque
             orderBy: [
                 { sortOrder: 'asc' },
                 { createdAt: 'asc' },
+                { id: 'asc' }, // Ensure stable sorting for cursor
             ],
         });
 
-        // PERMISSION: Guests can only see their matched photos
-        if (req.userRole === 'guest') {
-            const matchedIds = req.guest!.matchedPhotoIds;
-            console.log(`[PHOTOS] Guest filtering - matchedPhotoIds: ${JSON.stringify(matchedIds)}`);
-            console.log(`[PHOTOS] Total photos before filter: ${photos.length}`);
-            photos = photos.filter(p => matchedIds.includes(p.id));
-            console.log(`[PHOTOS] Photos after filter: ${photos.length}`);
+        let nextCursor: string | null = null;
+        if (items.length > limit) {
+            const nextItem = items.pop(); // Remove the extra item
+            // The cursor for the next page is the ID of the last item in the CURRENT page
+            nextCursor = items[items.length - 1].id;
         }
 
         // Add signed URLs
         const storageService = getStorageService();
         const photosWithUrls = await Promise.all(
-            photos.map(async (photo) => ({
+            items.map(async (photo) => ({
                 ...photo,
                 webUrl: await storageService.getSignedUrl(photo.webKey),
             }))
         );
 
-        res.json({ photos: photosWithUrls });
+        res.json({
+            photos: photosWithUrls,
+            nextCursor
+        });
     } catch (error) {
         next(error);
     }
@@ -435,6 +461,147 @@ router.get('/:id/download', requireAnyAuth, async (req: AuthenticatedRequest, re
         const downloadUrl = await storageService.getSignedUrl(key, 300); // 5 min expiry
 
         res.json({ downloadUrl });
+    } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * GET /api/photos/gallery/:galleryId/download-all
+ * P0-5: Download all photos in a gallery as a ZIP file
+ * 
+ * Streams photos directly from S3/storage and creates ZIP on-the-fly.
+ * This avoids CORS issues because:
+ * - Browser CORS only applies to browser-initiated cross-origin requests
+ * - Backend-to-S3 requests have no CORS restrictions
+ * - Backend streams ZIP directly to client as a same-origin response
+ * 
+ * PERMISSION:
+ * - Downloads must be enabled by photographer
+ * - Guests can only download their matched photos
+ */
+router.get('/gallery/:galleryId/download-all', requireAnyAuth, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    // Dynamic import of archiver to avoid issues if not installed
+    const archiver = await import('archiver');
+
+    try {
+        const { galleryId } = req.params;
+        console.log(`[DOWNLOAD_ALL] ZIP request for gallery ${galleryId} by ${req.userRole}`);
+
+        const gallery = await prisma.gallery.findUnique({
+            where: { id: galleryId },
+            select: {
+                id: true,
+                name: true,
+                photographerId: true,
+                downloadsEnabled: true,
+                downloadResolution: true,
+            },
+        });
+
+        if (!gallery) {
+            throw notFound('Gallery not found');
+        }
+
+        // PERMISSION: Check downloads are enabled
+        if (!gallery.downloadsEnabled) {
+            throw forbidden('Downloads are not enabled for this gallery');
+        }
+
+        // Check gallery access based on role
+        if (req.userRole === 'photographer') {
+            if (gallery.photographerId !== req.photographer!.id) {
+                throw forbidden('You do not own this gallery');
+            }
+        } else if (req.userRole === 'primary_client') {
+            if (req.primaryClient!.galleryId !== galleryId) {
+                throw forbidden('You do not have access to this gallery');
+            }
+        } else if (req.userRole === 'guest') {
+            if (req.guest!.galleryId !== galleryId) {
+                throw forbidden('You do not have access to this gallery');
+            }
+        }
+
+        // Get all photos in gallery
+        let photos = await prisma.photo.findMany({
+            where: { galleryId },
+            select: {
+                id: true,
+                filename: true,
+                originalKey: true,
+                webKey: true,
+            },
+            orderBy: [
+                { sortOrder: 'asc' },
+                { createdAt: 'asc' },
+            ],
+        });
+
+        // PERMISSION: Guests can only download their matched photos
+        if (req.userRole === 'guest') {
+            const matchedIds = req.guest!.matchedPhotoIds;
+            photos = photos.filter(p => matchedIds.includes(p.id));
+            console.log(`[DOWNLOAD_ALL] Guest filtered to ${photos.length} matched photos`);
+        }
+
+        if (photos.length === 0) {
+            res.status(400).json({
+                error: 'No photos available for download'
+            });
+            return;
+        }
+
+        console.log(`[DOWNLOAD_ALL] Streaming ${photos.length} photos as ZIP`);
+
+        // Sanitize gallery name for filename
+        const safeGalleryName = gallery.name.replace(/[^a-zA-Z0-9-_ ]/g, '').trim() || 'gallery';
+
+        // Set headers for ZIP download
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename="${safeGalleryName}.zip"`);
+
+        // Create ZIP archive with compression
+        const archive = archiver.default('zip', {
+            zlib: { level: 5 } // Balanced compression
+        });
+
+        // Handle archive errors
+        archive.on('error', (err: Error) => {
+            console.error('[DOWNLOAD_ALL] Archive error:', err);
+            if (!res.headersSent) {
+                res.status(500).json({ error: 'Failed to create ZIP archive' });
+            }
+        });
+
+        // Pipe archive to response
+        archive.pipe(res);
+
+        // Add each photo to the archive
+        const storageService = getStorageService();
+        for (let i = 0; i < photos.length; i++) {
+            const photo = photos[i];
+            const key = gallery.downloadResolution === 'original' ? photo.originalKey : photo.webKey;
+
+            try {
+                // Get stream from storage (S3 or local)
+                const stream = await storageService.getStream(key);
+
+                // Add to archive with a clean filename (include index to avoid duplicates)
+                const ext = photo.filename.split('.').pop() || 'jpg';
+                const cleanName = photo.filename.replace(/[^a-zA-Z0-9-_ .]/g, '').trim();
+                const archiveName = cleanName || `photo_${i + 1}.${ext}`;
+
+                archive.append(stream, { name: archiveName });
+            } catch (err) {
+                console.error(`[DOWNLOAD_ALL] Failed to add ${photo.filename}:`, err);
+                // Continue with other photos
+            }
+        }
+
+        // Finalize the archive (triggers the response)
+        await archive.finalize();
+        console.log(`[DOWNLOAD_ALL] ZIP archive finalized (${photos.length} files)`);
     } catch (error) {
         next(error);
     }

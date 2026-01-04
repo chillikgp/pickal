@@ -21,8 +21,11 @@ interface GalleryHeaderProps {
     showFavoritesOnly: boolean;
     setShowFavoritesOnly: (val: boolean) => void;
     onStartSlideshow: () => void;
+    onDownloadAll?: () => void;
+    isDownloading?: boolean;
     canDownload: boolean;
     canSelect: boolean;
+    totalPhotoCount?: number; // P2: Total count for "All" tab
 }
 
 // Icons as inline SVGs for cleaner code
@@ -66,8 +69,11 @@ export function GalleryHeader({
     showFavoritesOnly,
     setShowFavoritesOnly,
     onStartSlideshow,
+    onDownloadAll,
+    isDownloading = false,
     canDownload,
     canSelect,
+    totalPhotoCount = 0,
 }: GalleryHeaderProps) {
     const [isSticky, setIsSticky] = useState(false);
     const headerRef = useRef<HTMLDivElement>(null);
@@ -87,8 +93,9 @@ export function GalleryHeader({
 
     // Get photo count for a section
     const getPhotoCount = (sectionId: string | 'all') => {
-        if (sectionId === 'all') return photos.length;
-        return photos.filter(p => p.sectionId === sectionId).length;
+        if (sectionId === 'all') return totalPhotoCount || gallery._count?.photos || 0;
+        const section = sections.find(s => s.id === sectionId);
+        return section?._count?.photos || 0;
     };
 
     // Determine how many sections to show inline (desktop only)
@@ -200,11 +207,17 @@ export function GalleryHeader({
                         {/* Download All */}
                         {canDownload && (
                             <button
-                                onClick={() => { /* TODO: implement download all */ }}
-                                className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
+                                onClick={onDownloadAll}
+                                disabled={isDownloading}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md transition-colors ${isDownloading
+                                    ? 'text-gray-400 cursor-not-allowed'
+                                    : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                                    }`}
                             >
                                 <DownloadIcon />
-                                <span className="hidden lg:inline">Download</span>
+                                <span className="hidden lg:inline">
+                                    {isDownloading ? 'Downloading...' : 'Download'}
+                                </span>
                             </button>
                         )}
 
@@ -258,9 +271,13 @@ export function GalleryHeader({
                             {/* Download */}
                             {canDownload && (
                                 <button
-                                    onClick={() => { /* TODO: implement download all */ }}
-                                    className="p-2 text-gray-600 hover:bg-gray-100 rounded-md transition-colors"
-                                    title="Download All"
+                                    onClick={onDownloadAll}
+                                    disabled={isDownloading}
+                                    className={`p-2 rounded-md transition-colors ${isDownloading
+                                        ? 'text-gray-400 cursor-not-allowed'
+                                        : 'text-gray-600 hover:bg-gray-100'
+                                        }`}
+                                    title={isDownloading ? 'Downloading...' : 'Download All'}
                                 >
                                     <DownloadIcon />
                                 </button>

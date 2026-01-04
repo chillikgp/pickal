@@ -168,24 +168,91 @@ export async function requirePrimaryClient(
 /**
  * Allows either photographer OR client access.
  * Photographer has full access, clients have role-based access.
+ * 
+ * Supports:
+ * 1. JWT in Authorization: Bearer <jwt> (photographer)
+ * 2. Session token in x-session-token header (client)
+ * 3. Session token in Authorization: Bearer <sessionToken> (client - for frontend compatibility)
  */
 export async function requireAnyAuth(
     req: AuthenticatedRequest,
     res: Response,
     next: NextFunction
 ) {
-    // Check for JWT first (photographer)
     const authHeader = req.headers.authorization;
+    const sessionTokenHeader = req.headers['x-session-token'] as string;
 
-    if (authHeader?.startsWith('Bearer ')) {
-        return requirePhotographer(req, res, next);
+    // Check for x-session-token header first (preferred for clients)
+    if (sessionTokenHeader) {
+        return requireClientAccess(req, res, next);
     }
 
-    // Fall back to session token (client)
-    const sessionToken = req.headers['x-session-token'];
+    // Check for Authorization: Bearer header
+    if (authHeader?.startsWith('Bearer ')) {
+        const token = authHeader.split(' ')[1];
 
-    if (sessionToken) {
-        return requireClientAccess(req, res, next);
+        // Try JWT first (photographer)
+        try {
+            const decoded = jwt.verify(
+                token,
+                process.env.JWT_SECRET || 'dev-secret'
+            ) as JwtPayload;
+
+            const photographer = await prisma.photographer.findUnique({
+                where: { id: decoded.photographerId },
+                select: { id: true, email: true },
+            });
+
+            if (photographer) {
+                req.photographer = photographer;
+                req.userRole = 'photographer';
+                return next();
+            }
+        } catch (jwtError) {
+            // JWT verification failed - token might be a session token
+            console.log('[AUTH] JWT verification failed, trying as session token...');
+        }
+
+        // If JWT failed, try as session token (for guest/client via Bearer header)
+        // This supports frontend using Authorization: Bearer <sessionToken>
+        try {
+            const galleryId = req.params.galleryId || req.body.galleryId;
+
+            // Try primary client first
+            const primaryClient = await prisma.primaryClient.findUnique({
+                where: { sessionToken: token },
+                select: { id: true, sessionToken: true, galleryId: true },
+            });
+
+            if (primaryClient) {
+                if (galleryId && primaryClient.galleryId !== galleryId) {
+                    return next(forbidden('Session token not valid for this gallery'));
+                }
+                req.primaryClient = primaryClient;
+                req.userRole = 'primary_client';
+                return next();
+            }
+
+            // Try guest
+            const guest = await prisma.guest.findUnique({
+                where: { sessionToken: token },
+                select: { id: true, sessionToken: true, galleryId: true, matchedPhotoIds: true },
+            });
+
+            if (guest) {
+                if (galleryId && guest.galleryId !== galleryId) {
+                    return next(forbidden('Session token not valid for this gallery'));
+                }
+                req.guest = guest;
+                req.userRole = 'guest';
+                return next();
+            }
+
+            // Token is neither valid JWT nor valid session token
+            return next(unauthorized('Invalid authentication token'));
+        } catch (error) {
+            return next(error);
+        }
     }
 
     next(unauthorized('Authentication required'));

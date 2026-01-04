@@ -76,18 +76,25 @@ pickal/
 - Manage print requests
 
 ### Primary Client (Private Key Access)
-- Access gallery via private key
-- View all photos
+- Access gallery via private key or custom slug + password
+- View all photos (Infinite Scroll for performance)
+- Filter by Sections (Reception, Ceremony, etc.)
 - Select photos (when enabled)
 - Add comments
 - Request prints
-- Download photos (when enabled)
+- Download photos (Single or "Download All" ZIP stream)
 
 ### Guest (Selfie Access)
 - Access via mobile number + selfie
 - View only matched photos (face recognition)
 - Request prints for matched photos
 - Download matched photos (when enabled)
+- Strictly isolated access (cannot see unmatched photos)
+
+### Studio Branding
+- Custom Logo & Name on Gallery Access/Hero/Footer
+- Clickable links to Studio Website & Reviews
+- Configurable WhatsApp contact integration
 
 ## API Endpoints
 

@@ -79,6 +79,16 @@ export class S3StorageService implements IStorageService {
         }
     }
 
+    async getStream(key: string): Promise<import('stream').Readable> {
+        const command = new GetObjectCommand({
+            Bucket: this.bucketName,
+            Key: key,
+        });
+        const response = await this.client.send(command);
+        // S3 response.Body is a Readable stream
+        return response.Body as import('stream').Readable;
+    }
+
     private getContentType(ext: string): string {
         const types: Record<string, string> = {
             '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
