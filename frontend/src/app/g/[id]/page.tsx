@@ -3,7 +3,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { photoApi, galleryApi, selectionApi, commentApi, printApi, faceApi, setSessionToken, Photo, Gallery, Comment, getSessionToken, API_URL } from '@/lib/api';
+import { photoApi, galleryApi, selectionApi, commentApi, printApi, faceApi, setSessionToken, Photo, Gallery, Comment, getSessionToken, API_URL, studioApi } from '@/lib/api';
+import { isCustomDomain, getNormalizedHost, isUUID } from '@/lib/domain';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -19,7 +20,11 @@ import { GalleryNextSteps } from '@/components/GalleryNextSteps';
 export default function ClientGalleryPage() {
     const params = useParams();
     const router = useRouter();
-    const galleryId = params.id as string;
+    const galleryParam = params.id as string;
+
+    // Resolved gallery ID (always UUID after slug/domain resolution)
+    const [resolvedGalleryId, setResolvedGalleryId] = useState<string | null>(null);
+    const [isResolving, setIsResolving] = useState(true);
 
     const [gallery, setGallery] = useState<Gallery | null>(null);
     // Pagination State
@@ -75,10 +80,10 @@ export default function ClientGalleryPage() {
     const galleryGridRef = useRef<HTMLDivElement>(null);
     const galleryStartRef = useRef<HTMLDivElement>(null); // Anchor for "Back to Top"
 
-    const loadData = useCallback(async () => {
+    const loadData = useCallback(async (galleryId: string) => {
         const token = getSessionToken();
         if (!token) {
-            router.push(`/g/${galleryId}/access`);
+            router.push(`/g/${galleryParam}/access`);
             return;
         }
 
@@ -115,11 +120,48 @@ export default function ClientGalleryPage() {
         } finally {
             setIsLoading(false);
         }
-    }, [galleryId, router]);
+    }, [galleryParam, router]);
+
+    // Resolve gallery slug to UUID on custom domains
+    useEffect(() => {
+        const resolveGallery = async () => {
+            setIsResolving(true);
+            try {
+                const customDomain = isCustomDomain();
+                const host = getNormalizedHost();
+
+                if (customDomain && host && !isUUID(galleryParam)) {
+                    // Custom domain: resolve via host + gallerySlug
+                    console.log('[GALLERY] Resolving via custom domain:', host, galleryParam);
+                    const result = await studioApi.resolve({
+                        host,
+                        gallerySlug: galleryParam,
+                    });
+                    setResolvedGalleryId(result.gallery.id);
+                } else if (!isUUID(galleryParam)) {
+                    // Platform domain with slug: resolve via slug
+                    const slugResult = await galleryApi.getBySlug(galleryParam);
+                    setResolvedGalleryId(slugResult.galleryId);
+                } else {
+                    // Already a UUID
+                    setResolvedGalleryId(galleryParam);
+                }
+            } catch (error) {
+                console.error('Failed to resolve gallery:', error);
+                router.push(`/g/${galleryParam}/access`);
+            } finally {
+                setIsResolving(false);
+            }
+        };
+
+        resolveGallery();
+    }, [galleryParam, router]);
 
     useEffect(() => {
-        loadData();
-    }, [loadData]);
+        if (resolvedGalleryId) {
+            loadData(resolvedGalleryId);
+        }
+    }, [resolvedGalleryId, loadData]);
 
     // P2: Load data for a specific section (initial or next page)
     const loadSectionItems = useCallback(async (sectionId: string, cursor?: string | null) => {
@@ -133,7 +175,7 @@ export default function ClientGalleryPage() {
                 }
             }));
 
-            const res = await photoApi.getByGallery(galleryId, {
+            const res = await photoApi.getByGallery(resolvedGalleryId!, {
                 sectionId,
                 cursor: cursor || undefined,
                 limit: 50
@@ -173,7 +215,7 @@ export default function ClientGalleryPage() {
                 }
             }));
         }
-    }, [galleryId]);
+    }, [resolvedGalleryId]);
 
     // P2: Handle section switch with scroll
     const handleSectionChange = useCallback((sectionId: string) => {
@@ -214,7 +256,7 @@ export default function ClientGalleryPage() {
 
             // Build the download URL with auth token
             // Build the download URL with auth token
-            const downloadUrl = `${API_URL}/api/photos/gallery/${galleryId}/download-all`;
+            const downloadUrl = `${API_URL}/api/photos/gallery/${resolvedGalleryId}/download-all`;
 
             // Use fetch with streaming to handle the download
             // This allows us to show progress and handle errors properly
@@ -263,7 +305,7 @@ export default function ClientGalleryPage() {
         } finally {
             setIsDownloading(false);
         }
-    }, [galleryId, isDownloading]);
+    }, [resolvedGalleryId, isDownloading]);
 
     // Load guest selfie from sessionStorage
     useEffect(() => {
@@ -522,7 +564,7 @@ export default function ClientGalleryPage() {
                 return;
             }
 
-            const result = await faceApi.guestAccess(galleryId, mobileNumber, newSelfieFile);
+            const result = await faceApi.guestAccess(resolvedGalleryId!, mobileNumber, newSelfieFile);
             setSessionToken(result.sessionToken);
 
             // Update stored selfie
@@ -542,7 +584,7 @@ export default function ClientGalleryPage() {
             setShowSelfieChange(false);
             setNewSelfieFile(null);
             setNewSelfiePreview(null);
-            loadData();
+            loadData(resolvedGalleryId!);
         } catch (error) {
             toast.error(error instanceof Error ? error.message : 'Failed to re-match selfie');
         } finally {
@@ -821,7 +863,7 @@ export default function ClientGalleryPage() {
                                     </Button>
                                 ) : (
                                     <Button asChild variant="outline">
-                                        <Link href={`/g/${galleryId}/access`}>Try a different selfie</Link>
+                                        <Link href={`/g/${galleryParam}/access`}>Try a different selfie</Link>
                                     </Button>
                                 )}
                             </div>

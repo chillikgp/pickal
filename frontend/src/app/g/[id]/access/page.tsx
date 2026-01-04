@@ -2,7 +2,8 @@
 
 import { useState, useRef, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { galleryApi, faceApi, setSessionToken } from '@/lib/api';
+import { galleryApi, faceApi, setSessionToken, studioApi } from '@/lib/api';
+import { isCustomDomain, getNormalizedHost } from '@/lib/domain';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -66,8 +67,20 @@ export default function GalleryAccessPage() {
             try {
                 let resolvedId = urlParam;
 
-                // If not a UUID, it's a slug - resolve it first
-                if (!isUUID(urlParam)) {
+                // Check if we're on a custom domain
+                const customDomain = isCustomDomain();
+                const host = getNormalizedHost();
+
+                if (customDomain && host && !isUUID(urlParam)) {
+                    // Custom domain: resolve via host + gallerySlug
+                    console.log('[ACCESS] Resolving via custom domain:', host, urlParam);
+                    const result = await studioApi.resolve({
+                        host,
+                        gallerySlug: urlParam,
+                    });
+                    resolvedId = result.gallery.id;
+                } else if (!isUUID(urlParam)) {
+                    // Platform domain: resolve via slug
                     const slugResult = await galleryApi.getBySlug(urlParam);
                     resolvedId = slugResult.galleryId;
                 }
