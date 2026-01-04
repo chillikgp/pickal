@@ -5,7 +5,14 @@
  * Manages JWT tokens and session tokens.
  */
 
-export const API_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3001';
+// P0: Strict API URL resolution
+const ENV_API_URL = process.env.NEXT_PUBLIC_API_BASE_URL || process.env.NEXT_PUBLIC_API_URL;
+
+if (!ENV_API_URL && process.env.NODE_ENV === 'production') {
+    throw new Error('Configuration Error: NEXT_PUBLIC_API_BASE_URL is missing in production build.');
+}
+
+export const API_URL = ENV_API_URL || 'http://localhost:3001';
 
 // Token management
 let authToken: string | null = null;

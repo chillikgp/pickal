@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { photoApi, galleryApi, selectionApi, commentApi, printApi, faceApi, setSessionToken, Photo, Gallery, Comment, getSessionToken } from '@/lib/api';
+import { photoApi, galleryApi, selectionApi, commentApi, printApi, faceApi, setSessionToken, Photo, Gallery, Comment, getSessionToken, API_URL } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -213,7 +213,7 @@ export default function ClientGalleryPage() {
             }
 
             // Build the download URL with auth token
-            const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+            // Build the download URL with auth token
             const downloadUrl = `${API_URL}/api/photos/gallery/${galleryId}/download-all`;
 
             // Use fetch with streaming to handle the download
