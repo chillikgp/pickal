@@ -22,7 +22,12 @@ interface GalleryConfig {
     eventDate: string | null;
     coverPhotoUrl: string | null;
     selfieMatchingEnabled: boolean;
-    downloadsEnabled: boolean;
+    // DOWNLOAD_CONTROLS_V1: Structured download settings
+    downloads: {
+        individual: { enabled: boolean; allowedFor: 'clients' | 'guests' | 'both' };
+        bulkAll: { enabled: boolean; allowedFor: 'clients' | 'guests' | 'both' };
+        bulkFavorites: { enabled: boolean; allowedFor: 'clients' | 'guests' | 'both' };
+    };
     studio: {
         name: string;
         logoUrl: string | null;

@@ -276,14 +276,18 @@ export function canGuestAccessPhoto(
 }
 
 /**
- * PERMISSION: Check if gallery downloads are enabled
+ * @deprecated DOWNLOAD_CONTROLS_V1: Use download-settings.ts helpers instead.
+ * This function is kept for backwards compatibility but should not be used.
+ * Check `downloads.individual.enabled` etc. based on the download type.
  */
 export async function isDownloadEnabled(galleryId: string): Promise<boolean> {
     const gallery = await prisma.gallery.findUnique({
         where: { id: galleryId },
-        select: { downloadsEnabled: true },
+        select: { downloads: true },
     });
-    return gallery?.downloadsEnabled ?? false;
+    // Return true if ANY download type is enabled
+    const downloads = gallery?.downloads as any;
+    return downloads?.individual?.enabled || downloads?.bulkAll?.enabled || downloads?.bulkFavorites?.enabled || false;
 }
 
 /**

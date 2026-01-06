@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { photoApi, galleryApi, selectionApi, commentApi, printApi, faceApi, setSessionToken, Photo, Gallery, Comment, getSessionToken, API_URL, studioApi } from '@/lib/api';
+import { photoApi, galleryApi, selectionApi, commentApi, printApi, faceApi, setSessionToken, Photo, Gallery, Comment, getSessionToken, API_URL, studioApi, DownloadSettings, DEFAULT_DOWNLOAD_SETTINGS } from '@/lib/api';
 import { isCustomDomain, getNormalizedHost, isUUID } from '@/lib/domain';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -307,6 +307,78 @@ export default function ClientGalleryPage() {
         }
     }, [resolvedGalleryId, isDownloading]);
 
+    // DOWNLOAD_CONTROLS_V1: Download selected favorites as ZIP
+    const handleDownloadFavorites = useCallback(async (photoIds: string[]) => {
+        if (isDownloading || photoIds.length === 0) return;
+
+        setIsDownloading(true);
+        try {
+            toast.info(`Preparing download of ${photoIds.length} favorites...`);
+
+            const token = getSessionToken();
+            if (!token) {
+                toast.error('Please log in to download photos');
+                setIsDownloading(false);
+                return;
+            }
+
+            const downloadUrl = `${API_URL}/api/photos/gallery/${resolvedGalleryId}/download-favorites`;
+
+            const response = await fetch(downloadUrl, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ photoIds }),
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                const errorCode = errorData.error?.code;
+
+                // DOWNLOAD_CONTROLS_V1: User-friendly error messages
+                if (errorCode === 'FAVORITES_LIMIT_EXCEEDED') {
+                    throw new Error('You can download up to 200 favorite photos at a time. Please reduce your selection.');
+                }
+
+                const message =
+                    typeof errorData.error === 'string'
+                        ? errorData.error
+                        : (errorData.error?.message || errorData.message || 'Download failed');
+                throw new Error(message);
+            }
+
+            // Get filename from Content-Disposition header
+            const contentDisposition = response.headers.get('Content-Disposition');
+            const filenameMatch = contentDisposition?.match(/filename="?([^"]+)"?/);
+            const filename = filenameMatch?.[1] || 'favorites.zip';
+
+            // Convert response to blob
+            const blob = await response.blob();
+
+            // Create download link
+            const blobUrl = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = blobUrl;
+            link.download = filename;
+            link.style.display = 'none';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+
+            // Clean up
+            URL.revokeObjectURL(blobUrl);
+
+            toast.success('Favorites download complete!');
+        } catch (error: any) {
+            console.error('[DOWNLOAD_FAVORITES] Error:', error);
+            toast.error(error.message || 'Failed to download favorites');
+        } finally {
+            setIsDownloading(false);
+        }
+    }, [resolvedGalleryId, isDownloading]);
+
     // Load guest selfie from sessionStorage
     useEffect(() => {
         const savedSelfie = sessionStorage.getItem('guest_selfie_preview');
@@ -491,7 +563,16 @@ export default function ClientGalleryPage() {
     };
 
     const handleDownload = async (photo: Photo) => {
-        if (!gallery?.downloadsEnabled) {
+        // DOWNLOAD_CONTROLS_V1: Check individual download permissions based on role
+        const downloads = gallery?.downloads || DEFAULT_DOWNLOAD_SETTINGS;
+        const userRole = guestSelfiePreview ? 'guest' : 'primary_client';
+
+        const canDownloadIndividual = downloads.individual.enabled &&
+            (downloads.individual.allowedFor === 'both' ||
+                (downloads.individual.allowedFor === 'clients' && userRole === 'primary_client') ||
+                (downloads.individual.allowedFor === 'guests' && userRole === 'guest'));
+
+        if (!canDownloadIndividual) {
             toast.error('Downloads are not enabled for this gallery');
             return;
         }
@@ -616,7 +697,24 @@ export default function ClientGalleryPage() {
     // Guests are identified by having a selfie preview - they cannot select
     const isGuest = !!guestSelfiePreview;
     const canSelect = gallery.selectionState === 'OPEN' && !isGuest;
-    const canDownload = gallery.downloadsEnabled;
+
+    // DOWNLOAD_CONTROLS_V1: Compute download permissions based on role
+    const downloads = gallery.downloads || DEFAULT_DOWNLOAD_SETTINGS;
+    const userRole = isGuest ? 'guest' : 'primary_client';
+    const canDownloadIndividual = downloads.individual.enabled &&
+        (downloads.individual.allowedFor === 'both' ||
+            (downloads.individual.allowedFor === 'clients' && userRole === 'primary_client') ||
+            (downloads.individual.allowedFor === 'guests' && userRole === 'guest'));
+    const canDownloadBulkAll = downloads.bulkAll.enabled &&
+        (downloads.bulkAll.allowedFor === 'both' ||
+            (downloads.bulkAll.allowedFor === 'clients' && userRole === 'primary_client') ||
+            (downloads.bulkAll.allowedFor === 'guests' && userRole === 'guest'));
+    const canDownloadBulkFavorites = downloads.bulkFavorites.enabled &&
+        (downloads.bulkFavorites.allowedFor === 'both' ||
+            (downloads.bulkFavorites.allowedFor === 'clients' && userRole === 'primary_client') ||
+            (downloads.bulkFavorites.allowedFor === 'guests' && userRole === 'guest'));
+    const canDownload = canDownloadIndividual; // For individual photo download button
+    const canDownloadBulk = canDownloadBulkAll || canDownloadBulkFavorites;
     const canComment = !isGuest && gallery.commentsEnabled !== false;
 
     // Get cover photo - only if explicitly set by photographer (no fallback)
@@ -754,7 +852,7 @@ export default function ClientGalleryPage() {
                 sections={sections}
                 photos={filteredPhotos}
                 activeSection={activeSection}
-                setActiveSection={handleSectionChange} // P2: Use handler with scroll logic
+                setActiveSection={handleSectionChange}
                 selectedIds={selectedIds}
                 showFavoritesOnly={showFavoritesOnly}
                 setShowFavoritesOnly={setShowFavoritesOnly}
@@ -764,10 +862,16 @@ export default function ClientGalleryPage() {
                     setSlideshowActive(true);
                 }}
                 onDownloadAll={handleDownloadAll}
+                onDownloadFavorites={handleDownloadFavorites}
                 isDownloading={isDownloading}
-                canDownload={gallery.downloadsEnabled}
+                canDownloadIndividual={canDownloadIndividual}
+                canDownloadBulkAll={canDownloadBulkAll}
+                canDownloadBulkFavorites={canDownloadBulkFavorites}
+                downloadResolution={gallery.downloadResolution}
                 canSelect={gallery.selectionState !== 'DISABLED'}
                 totalPhotoCount={gallery._count?.photos || 0}
+                studioWhatsappNumber={gallery.photographer?.whatsappNumber ?? undefined}
+                gallerySlug={gallery.customSlug || resolvedGalleryId || undefined}
             />
 
             {/* Guest Selfie Card - Shown if guest uploaded a selfie */}

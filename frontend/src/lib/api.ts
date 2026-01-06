@@ -113,10 +113,10 @@ export interface Photographer {
     email: string;
     name: string;
     businessName?: string;
-    logoUrl?: string;
-    websiteUrl?: string;
-    reviewUrl?: string;
-    whatsappNumber?: string;
+    logoUrl?: string | null;
+    websiteUrl?: string | null;
+    reviewUrl?: string | null;
+    whatsappNumber?: string | null;
     studioSlug?: string | null;    // Studio-level slug for URL routing
     customDomain?: string | null;  // Optional custom domain
     createdAt: string;
@@ -153,6 +153,38 @@ export const authApi = {
 // GALLERY API
 // ============================================================================
 
+// DOWNLOAD_CONTROLS_V1: Download settings types
+export type DownloadAllowedFor = 'clients' | 'guests' | 'both';
+
+export interface IndividualDownloadSettings {
+    enabled: boolean;
+    allowedFor: DownloadAllowedFor;
+}
+
+export interface BulkAllDownloadSettings {
+    enabled: boolean;
+    allowedFor: DownloadAllowedFor;
+}
+
+export interface BulkFavoritesDownloadSettings {
+    enabled: boolean;
+    allowedFor: DownloadAllowedFor;
+    // Note: maxCount is NOT exposed to clients - backend enforces 200 limit silently
+}
+
+export interface DownloadSettings {
+    individual: IndividualDownloadSettings;
+    bulkAll: BulkAllDownloadSettings;
+    bulkFavorites: BulkFavoritesDownloadSettings;
+}
+
+// Default download settings for new galleries
+export const DEFAULT_DOWNLOAD_SETTINGS: DownloadSettings = {
+    individual: { enabled: false, allowedFor: 'clients' },
+    bulkAll: { enabled: false, allowedFor: 'clients' },
+    bulkFavorites: { enabled: false, allowedFor: 'clients' }
+};
+
 export interface Gallery {
     id: string;
     name: string;
@@ -164,7 +196,8 @@ export interface Gallery {
     customPassword?: string | null;
     // P0-2: Internal notes visible only to photographer
     internalNotes?: string | null;
-    downloadsEnabled: boolean;
+    // DOWNLOAD_CONTROLS_V1: Structured download settings
+    downloads?: DownloadSettings;
     downloadResolution: 'web' | 'original';
     selectionState: 'DISABLED' | 'OPEN' | 'LOCKED';
     commentsEnabled: boolean;
@@ -246,7 +279,10 @@ export const galleryApi = {
             eventDate: string | null;
             coverPhotoUrl: string | null;
             selfieMatchingEnabled: boolean;
-            downloadsEnabled: boolean;
+            // DOWNLOAD_CONTROLS_V1: Structured download settings (without maxCount)
+            downloads: Omit<DownloadSettings, 'bulkFavorites'> & {
+                bulkFavorites: Omit<BulkFavoritesDownloadSettings, 'maxCount'>;
+            };
             accessModes: string[];
             studio: {
                 name: string;
@@ -360,6 +396,13 @@ export const photoApi = {
             photos: { id: string; filename: string; downloadUrl: string }[];
             totalCount: number;
         }>(`/api/photos/gallery/${galleryId}/download-all`, { useSession }),
+
+    // DOWNLOAD_CONTROLS_V1: Download favorite photos as ZIP
+    downloadFavorites: (galleryId: string, photoIds: string[], useSession = false) =>
+        apiRequest<void>(
+            `/api/photos/gallery/${galleryId}/download-favorites`,
+            { method: 'POST', body: { photoIds }, useSession }
+        ),
 
     delete: (id: string) =>
         apiRequest<{ success: boolean }>(`/api/photos/${id}`, { method: 'DELETE' }),

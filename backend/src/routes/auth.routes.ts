@@ -224,8 +224,10 @@ router.patch('/profile', requirePhotographer, async (req: AuthenticatedRequest, 
                 websiteUrl: data.websiteUrl,
                 reviewUrl: data.reviewUrl,
                 whatsappNumber: data.whatsappNumber,
-                studioSlug: data.studioSlug?.toLowerCase(),
-                customDomain: data.customDomain?.toLowerCase(),
+                // Fix: preserve null values. ?.toLowerCase() turns null into undefined (skip update),
+                // but we want to set it to NULL in db if data.studioSlug is null.
+                studioSlug: data.studioSlug ? data.studioSlug.toLowerCase() : data.studioSlug,
+                customDomain: data.customDomain ? data.customDomain.toLowerCase() : data.customDomain,
             },
             select: {
                 id: true,

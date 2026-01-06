@@ -3,7 +3,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
-import { galleryApi, photoApi, sectionApi, commentApi, Gallery, Photo, Section } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -15,6 +14,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogClose } from '@/components/ui/dialog';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { toast } from 'sonner';
+import { useUpload } from '@/hooks/useUpload';
+import { UploadPanel } from '@/components/UploadPanel';
+import { GalleryShareModal } from '@/components/GalleryShareModal';
+import { authApi, galleryApi, photoApi, sectionApi, commentApi, Gallery, Photo, Section, Photographer } from '@/lib/api';
+
 
 export default function GalleryDetailPage() {
     const params = useParams();
@@ -25,8 +29,6 @@ export default function GalleryDetailPage() {
     const [photos, setPhotos] = useState<Photo[]>([]);
     const [sections, setSections] = useState<Section[]>([]);
     const [isLoading, setIsLoading] = useState(true);
-    const [isUploading, setIsUploading] = useState(false);
-    const [uploadProgress, setUploadProgress] = useState(0);
 
     // Section management
     const [activeSection, setActiveSection] = useState<string>('all');
@@ -34,8 +36,32 @@ export default function GalleryDetailPage() {
     const [uploadSectionId, setUploadSectionId] = useState<string>('');
     const [isSectionDialogOpen, setIsSectionDialogOpen] = useState(false);
 
+    // Share Modal State
+    const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+    const [photographer, setPhotographer] = useState<Photographer | null>(null);
+
+    // Fetch photographer details for sharing (custom domain, studio slug)
+    useEffect(() => {
+        authApi.me()
+            .then(({ photographer }) => setPhotographer(photographer))
+            .catch(() => {
+                // If fetch fails, we just don't set the photographer. 
+                // The Share modal degrades gracefully to use default URLs only.
+                console.warn('Failed to fetch photographer details for sharing');
+            });
+    }, []);
+
     // Settings state
-    const [downloadsEnabled, setDownloadsEnabled] = useState(false);
+    // DOWNLOAD_CONTROLS_V1: Structured download settings
+    const [downloads, setDownloads] = useState<{
+        individual: { enabled: boolean; allowedFor: 'clients' | 'guests' | 'both' };
+        bulkAll: { enabled: boolean; allowedFor: 'clients' | 'guests' | 'both' };
+        bulkFavorites: { enabled: boolean; allowedFor: 'clients' | 'guests' | 'both' };
+    }>({
+        individual: { enabled: false, allowedFor: 'clients' },
+        bulkAll: { enabled: false, allowedFor: 'clients' },
+        bulkFavorites: { enabled: false, allowedFor: 'clients' }
+    });
     const [downloadResolution, setDownloadResolution] = useState<'web' | 'original'>('web');
     const [selectionState, setSelectionState] = useState<'DISABLED' | 'OPEN' | 'LOCKED'>('DISABLED');
     const [selfieMatchingEnabled, setSelfieMatchingEnabled] = useState(true);
@@ -63,7 +89,10 @@ export default function GalleryDetailPage() {
             setGallery(galleryRes.gallery);
             setPhotos(photosRes.photos);
             setSections(galleryRes.gallery.sections || []);
-            setDownloadsEnabled(galleryRes.gallery.downloadsEnabled);
+            // DOWNLOAD_CONTROLS_V1: Load structured download settings
+            if (galleryRes.gallery.downloads) {
+                setDownloads(galleryRes.gallery.downloads);
+            }
             setDownloadResolution(galleryRes.gallery.downloadResolution);
             setSelectionState(galleryRes.gallery.selectionState);
             setSelfieMatchingEnabled(galleryRes.gallery.selfieMatchingEnabled ?? false); // P0-3: New galleries default to false
@@ -127,73 +156,23 @@ export default function GalleryDetailPage() {
         .filter(p => activeSection === 'all' || p.sectionId === activeSection)
         .filter(p => !viewSelectedOnly || (p._count?.selections || 0) > 0);
 
-    const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    // UPLOAD_BATCHING_V1: Use new upload hook for batching and concurrency
+    const uploadState = useUpload({
+        galleryId,
+        sectionId: uploadSectionId || undefined,
+        onComplete: loadGallery,
+    });
+
+    // Handle file selection - start upload flow
+    const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
         const files = e.target.files;
         if (!files || files.length === 0) return;
 
-        // Frontend Guardrails
-        const MAX_FILES = 50;
-        const MAX_SIZE_BYTES = 20 * 1024 * 1024; // 20 MB
+        // Start upload flow (validation → preview → proceed)
+        uploadState.startUpload(files);
 
-        if (files.length > MAX_FILES) {
-            toast.error(`You can upload up to ${MAX_FILES} photos at once`);
-            e.target.value = ''; // Reset input
-            return;
-        }
-
-        const validFiles: File[] = [];
-        const skippedFiles: { name: string; reason: string }[] = [];
-
-        Array.from(files).forEach(file => {
-            if (file.size > MAX_SIZE_BYTES) {
-                skippedFiles.push({ name: file.name, reason: 'exceeds 20MB' });
-            } else {
-                validFiles.push(file);
-            }
-        });
-
-        if (skippedFiles.length > 0) {
-            toast.error(`${skippedFiles.length} file(s) skipped: too large (>20MB)`);
-            // Show first few skipped files for clarity
-            console.warn('Skipped files:', skippedFiles);
-        }
-
-        if (validFiles.length === 0) {
-            e.target.value = '';
-            return;
-        }
-
-        setIsUploading(true);
-        setUploadProgress(0);
-
-        // Upload valid files in one batch if backend supports it, or looping (current)
-        // Since we modified backend to support bulk array, let's update frontend to send all at once?
-        // Ah, the user instruction was "Max bulk upload: 50 images per request".
-        // The current frontend loops and sends 1 by 1.
-        // We SHOULD update this to send all in one request to comply with "per request" limit effectively (1 request vs 50).
-        // However, updating to bulk upload involves changing `photoApi.upload` to `photoApi.uploadBulk` or modifying existing.
-        // Let's stick to the current loop for now BUT enforce the "50 selected" limit properly.
-        // Wait, if we Loop, we send 50 requests. The backend "Max bulk upload: 50 images per request" guardrail
-        // won't trigger if we send 50 requests of 1 image.
-        // The guardrail "Max bulk upload: 50 images per request" implies we SHOULD support bulk upload endpoint.
-        // We DID implement `upload.array` in the backend.
-        // So we should update `photoApi.upload` to support multiple files or loop?
-        // The backend middleware `upload.array('photos', 50)` expects field name `photos`.
-        // The current `photoApi.upload` uses `photo` field and single file.
-        // We need to update `photoApi` and this handler to use bulk upload.
-
-        try {
-            // New bulk upload implementation
-            await photoApi.upload(galleryId, validFiles, uploadSectionId || undefined);
-            toast.success(`Uploaded ${validFiles.length} photos`);
-        } catch (error) {
-            toast.error(error instanceof Error ? error.message : 'Upload failed');
-        } finally {
-            setIsUploading(false);
-            setUploadProgress(0);
-            loadGallery();
-            e.target.value = '';
-        }
+        // Reset input so same files can be re-selected
+        e.target.value = '';
     };
 
     const handleCreateSection = async () => {
@@ -278,11 +257,7 @@ export default function GalleryDetailPage() {
         }
     };
 
-    const copyShareLink = () => {
-        const url = `${window.location.origin}/g/${galleryId}/access`;
-        navigator.clipboard.writeText(url);
-        toast.success('Share link copied!');
-    };
+
 
     const copyPrivateKey = () => {
         if (gallery?.privateKey) {
@@ -325,7 +300,7 @@ export default function GalleryDetailPage() {
                             <h1 className="font-bold text-xl">{gallery.name}</h1>
                         </div>
                         <div className="flex gap-2">
-                            <Button variant="outline" onClick={copyShareLink}>Share</Button>
+                            <Button variant="outline" onClick={() => setIsShareModalOpen(true)}>Share</Button>
                             <Dialog>
                                 <DialogTrigger asChild>
                                     <Button variant="outline">Settings</Button>
@@ -501,39 +476,178 @@ export default function GalleryDetailPage() {
                                                 <Label>Share Link</Label>
                                                 <div className="flex gap-2">
                                                     <Input value={`${window.location.origin}/g/${galleryId}/access`} readOnly className="text-sm" />
-                                                    <Button variant="outline" onClick={copyShareLink}>Copy</Button>
+                                                    <Button variant="outline" onClick={() => setIsShareModalOpen(true)}>Share</Button>
                                                 </div>
                                             </div>
                                         </TabsContent>
                                         <TabsContent value="features" className="space-y-4 pt-4">
-                                            <div className="flex items-center justify-between">
+                                            {/* DOWNLOAD_CONTROLS_V1: Download Quality */}
+                                            <div className="space-y-3">
                                                 <div>
-                                                    <Label>Downloads</Label>
-                                                    <p className="text-xs text-muted-foreground">Allow clients to download photos</p>
+                                                    <Label>Download Quality</Label>
+                                                    <p className="text-xs text-muted-foreground">Quality of photos when downloaded</p>
                                                 </div>
-                                                <Switch
-                                                    checked={downloadsEnabled}
-                                                    onCheckedChange={(checked) => {
-                                                        setDownloadsEnabled(checked);
-                                                        handleSettingUpdate({ downloadsEnabled: checked });
-                                                    }}
-                                                />
+                                                <div className="flex gap-4">
+                                                    <label className="flex items-center gap-2 cursor-pointer">
+                                                        <input
+                                                            type="radio"
+                                                            name="downloadResolution"
+                                                            value="web"
+                                                            checked={downloadResolution === 'web'}
+                                                            onChange={() => {
+                                                                setDownloadResolution('web');
+                                                                handleSettingUpdate({ downloadResolution: 'web' });
+                                                            }}
+                                                            className="w-4 h-4"
+                                                        />
+                                                        <span className="text-sm">Web (1920px, smaller files)</span>
+                                                    </label>
+                                                    <label className="flex items-center gap-2 cursor-pointer">
+                                                        <input
+                                                            type="radio"
+                                                            name="downloadResolution"
+                                                            value="original"
+                                                            checked={downloadResolution === 'original'}
+                                                            onChange={() => {
+                                                                setDownloadResolution('original');
+                                                                handleSettingUpdate({ downloadResolution: 'original' });
+                                                            }}
+                                                            className="w-4 h-4"
+                                                        />
+                                                        <span className="text-sm">Original (full resolution)</span>
+                                                    </label>
+                                                </div>
                                             </div>
-                                            {downloadsEnabled && (
-                                                <div className="space-y-2">
-                                                    <Label>Download Resolution</Label>
-                                                    <Select value={downloadResolution} onValueChange={(value: 'web' | 'original') => {
-                                                        setDownloadResolution(value);
-                                                        handleSettingUpdate({ downloadResolution: value });
-                                                    }}>
-                                                        <SelectTrigger><SelectValue /></SelectTrigger>
-                                                        <SelectContent>
-                                                            <SelectItem value="web">Web Quality (1920px)</SelectItem>
-                                                            <SelectItem value="original">Original Quality</SelectItem>
-                                                        </SelectContent>
-                                                    </Select>
+
+                                            {/* DOWNLOAD_CONTROLS_V1: Individual Photo Download */}
+                                            <div className="border-t pt-4 space-y-3">
+                                                <div className="flex items-center justify-between">
+                                                    <div>
+                                                        <Label>Individual Photo Download</Label>
+                                                        <p className="text-xs text-muted-foreground">Allow downloading single photos</p>
+                                                    </div>
+                                                    <Switch
+                                                        checked={downloads.individual.enabled}
+                                                        onCheckedChange={(checked) => {
+                                                            const newDownloads = {
+                                                                ...downloads,
+                                                                individual: { ...downloads.individual, enabled: checked }
+                                                            };
+                                                            setDownloads(newDownloads);
+                                                            handleSettingUpdate({ downloads: newDownloads });
+                                                        }}
+                                                    />
                                                 </div>
-                                            )}
+                                                {downloads.individual.enabled && (
+                                                    <div className="ml-4 space-y-2">
+                                                        <Label className="text-xs">Allowed For</Label>
+                                                        <Select
+                                                            value={downloads.individual.allowedFor}
+                                                            onValueChange={(value: 'clients' | 'guests' | 'both') => {
+                                                                const newDownloads = {
+                                                                    ...downloads,
+                                                                    individual: { ...downloads.individual, allowedFor: value }
+                                                                };
+                                                                setDownloads(newDownloads);
+                                                                handleSettingUpdate({ downloads: newDownloads });
+                                                            }}
+                                                        >
+                                                            <SelectTrigger className="w-[180px]">
+                                                                <SelectValue />
+                                                            </SelectTrigger>
+                                                            <SelectContent>
+                                                                <SelectItem value="clients">Clients Only</SelectItem>
+                                                                <SelectItem value="guests">Guests Only</SelectItem>
+                                                                <SelectItem value="both">Both</SelectItem>
+                                                            </SelectContent>
+                                                        </Select>
+                                                    </div>
+                                                )}
+                                            </div>
+
+                                            {/* DOWNLOAD_CONTROLS_V1: Bulk Downloads */}
+                                            <div className="border-t pt-4 space-y-3">
+                                                <div className="flex items-center justify-between">
+                                                    <div>
+                                                        <Label>Bulk Downloads</Label>
+                                                        <p className="text-xs text-muted-foreground">Allow downloading multiple photos at once</p>
+                                                    </div>
+                                                    <Switch
+                                                        checked={downloads.bulkAll.enabled || downloads.bulkFavorites.enabled}
+                                                        onCheckedChange={(checked) => {
+                                                            const newDownloads = {
+                                                                ...downloads,
+                                                                bulkAll: { ...downloads.bulkAll, enabled: checked },
+                                                                bulkFavorites: { ...downloads.bulkFavorites, enabled: checked }
+                                                            };
+                                                            setDownloads(newDownloads);
+                                                            handleSettingUpdate({ downloads: newDownloads });
+                                                        }}
+                                                    />
+                                                </div>
+                                                {(downloads.bulkAll.enabled || downloads.bulkFavorites.enabled) && (
+                                                    <div className="ml-4 space-y-3">
+                                                        <div className="space-y-2">
+                                                            <Label className="text-xs">Allowed For</Label>
+                                                            <Select
+                                                                value={downloads.bulkAll.allowedFor}
+                                                                onValueChange={(value: 'clients' | 'guests' | 'both') => {
+                                                                    const newDownloads = {
+                                                                        ...downloads,
+                                                                        bulkAll: { ...downloads.bulkAll, allowedFor: value },
+                                                                        bulkFavorites: { ...downloads.bulkFavorites, allowedFor: value }
+                                                                    };
+                                                                    setDownloads(newDownloads);
+                                                                    handleSettingUpdate({ downloads: newDownloads });
+                                                                }}
+                                                            >
+                                                                <SelectTrigger className="w-[180px]">
+                                                                    <SelectValue />
+                                                                </SelectTrigger>
+                                                                <SelectContent>
+                                                                    <SelectItem value="clients">Clients Only</SelectItem>
+                                                                    <SelectItem value="guests">Guests Only</SelectItem>
+                                                                    <SelectItem value="both">Both</SelectItem>
+                                                                </SelectContent>
+                                                            </Select>
+                                                        </div>
+                                                        <div className="space-y-2">
+                                                            <label className="flex items-center gap-2 cursor-pointer text-sm">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={downloads.bulkAll.enabled}
+                                                                    onChange={(e) => {
+                                                                        const newDownloads = {
+                                                                            ...downloads,
+                                                                            bulkAll: { ...downloads.bulkAll, enabled: e.target.checked }
+                                                                        };
+                                                                        setDownloads(newDownloads);
+                                                                        handleSettingUpdate({ downloads: newDownloads });
+                                                                    }}
+                                                                    className="w-4 h-4"
+                                                                />
+                                                                Download All Photos
+                                                            </label>
+                                                            <label className="flex items-center gap-2 cursor-pointer text-sm">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={downloads.bulkFavorites.enabled}
+                                                                    onChange={(e) => {
+                                                                        const newDownloads = {
+                                                                            ...downloads,
+                                                                            bulkFavorites: { ...downloads.bulkFavorites, enabled: e.target.checked }
+                                                                        };
+                                                                        setDownloads(newDownloads);
+                                                                        handleSettingUpdate({ downloads: newDownloads });
+                                                                    }}
+                                                                    className="w-4 h-4"
+                                                                />
+                                                                Download Favorites (max 200)
+                                                            </label>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
                                             <div className="space-y-2">
                                                 <Label>Selection State</Label>
                                                 <Select value={selectionState} onValueChange={(value: 'DISABLED' | 'OPEN' | 'LOCKED') => {
@@ -615,9 +729,9 @@ export default function GalleryDetailPage() {
                                         ))}
                                     </SelectContent>
                                 </Select>
-                                <Input type="file" accept="image/*" multiple onChange={handleFileUpload} disabled={isUploading} className="hidden" id="photo-upload" />
+                                <Input type="file" accept="image/*" multiple onChange={handleFileUpload} disabled={uploadState.isUploading} className="hidden" id="photo-upload" />
                                 <label htmlFor="photo-upload">
-                                    <Button asChild disabled={isUploading}><span>{isUploading ? `Uploading ${uploadProgress}%...` : 'Upload Photos'}</span></Button>
+                                    <Button asChild disabled={uploadState.isUploading}><span>{uploadState.isUploading ? 'Uploading...' : 'Upload Photos'}</span></Button>
                                 </label>
                             </div>
                         </div>
@@ -794,6 +908,32 @@ export default function GalleryDetailPage() {
                     )}
                 </DialogContent>
             </Dialog>
+
+            {/* UPLOAD_BATCHING_V1: Upload progress panel */}
+            {uploadState.phase !== 'idle' && (
+                <UploadPanel
+                    queue={uploadState.queue}
+                    progress={uploadState.progress}
+                    phase={uploadState.phase === 'validation' ? 'validation' :
+                        uploadState.phase === 'uploading' ? 'uploading' :
+                            uploadState.phase === 'completed' ? 'completed' : 'completedWithErrors'}
+                    isUploading={uploadState.isUploading}
+                    onRetry={uploadState.retryFailed}
+                    onDismiss={uploadState.cancelUpload}
+                    onProceed={uploadState.proceedWithUpload}
+                    onCancel={uploadState.cancelUpload}
+                />
+            )}
+
+            {/* GALLERIES_SHARE_UX_V1: Share Modal */}
+            {gallery && (
+                <GalleryShareModal
+                    gallery={gallery}
+                    photographer={photographer}
+                    open={isShareModalOpen}
+                    onOpenChange={setIsShareModalOpen}
+                />
+            )}
         </div >
     );
 }

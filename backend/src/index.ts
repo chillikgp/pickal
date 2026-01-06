@@ -24,9 +24,75 @@ export const prisma = new PrismaClient();
 // Create Express app
 const app = express();
 
-// Middleware
+// ============================================================================
+// CORS Configuration with Dynamic Custom Domain Support
+// ============================================================================
+
+// Static allowed origins (always allowed)
+const STATIC_ALLOWED_ORIGINS = [
+    process.env.FRONTEND_URL || 'https://pickal-tan.vercel.app',
+    'https://pickal-tan.vercel.app',
+    'http://localhost:3000',
+    'http://localhost:3001',
+];
+
+// Cache for custom domains (refreshed periodically)
+let customDomainsCache: Set<string> = new Set();
+let cacheLastUpdated = 0;
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+// Refresh custom domains cache from database
+async function refreshCustomDomainsCache(): Promise<void> {
+    try {
+        const photographers = await prisma.photographer.findMany({
+            where: { customDomain: { not: null } },
+            select: { customDomain: true },
+        });
+
+        customDomainsCache = new Set(
+            photographers
+                .map(p => p.customDomain)
+                .filter((d): d is string => d !== null)
+                .map(d => `https://${d.toLowerCase()}`)
+        );
+
+        cacheLastUpdated = Date.now();
+        console.log(`[CORS] Refreshed custom domains cache: ${customDomainsCache.size} domains`);
+    } catch (error) {
+        console.error('[CORS] Failed to refresh custom domains cache:', error);
+    }
+}
+
+// Check if origin is allowed
+async function isOriginAllowed(origin: string | undefined): Promise<boolean> {
+    if (!origin) return true; // Allow requests without Origin header (same-origin, curl, etc.)
+
+    // Check static origins
+    if (STATIC_ALLOWED_ORIGINS.includes(origin)) return true;
+
+    // Refresh cache if stale
+    if (Date.now() - cacheLastUpdated > CACHE_TTL_MS) {
+        await refreshCustomDomainsCache();
+    }
+
+    // Check custom domains
+    return customDomainsCache.has(origin.toLowerCase());
+}
+
+// Initialize cache on startup
+refreshCustomDomainsCache();
+
+// Dynamic CORS middleware
 app.use(cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: async (origin, callback) => {
+        const allowed = await isOriginAllowed(origin);
+        if (allowed) {
+            callback(null, origin || true);
+        } else {
+            console.log(`[CORS] Blocked origin: ${origin}`);
+            callback(null, false);
+        }
+    },
     credentials: true,
 }));
 app.use(express.json({ limit: '50mb' }));

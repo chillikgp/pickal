@@ -70,10 +70,11 @@ pickal/
 - Register/Login with JWT auth
 - Create and manage galleries
 - Upload photos (auto-generates web-optimized + LQIP)
-- Control downloads (on/off, resolution)
+- **Download Controls v1.1**: Role-based permissions for individual, bulk-all, and bulk-favorites downloads
 - Control selection mode (disabled/open/locked)
 - View client selections with session tracking
 - Manage print requests
+- **Studio Branding**: Full-page branding editor with auto-save (`/dashboard/branding`)
 
 ### Primary Client (Private Key Access)
 - Access gallery via private key or custom slug + password
@@ -88,13 +89,74 @@ pickal/
 - Access via mobile number + selfie
 - View only matched photos (face recognition)
 - Request prints for matched photos
-- Download matched photos (when enabled)
+- Download matched photos (when enabled by photographer)
 - Strictly isolated access (cannot see unmatched photos)
 
 ### Studio Branding
 - Custom Logo & Name on Gallery Access/Hero/Footer
 - Clickable links to Studio Website & Reviews
 - Configurable WhatsApp contact integration
+- Custom domain support (`gallery.yourstudio.com`)
+- Short URL slugs (`/your-studio/g/wedding-2024`)
+
+---
+
+## Download Controls
+
+Photographers control three download modes, each with role-based permissions:
+
+| Mode | Description | Max Limit |
+|------|-------------|-----------|
+| **Individual** | Single photo downloads | Unlimited |
+| **Bulk All** | Download entire gallery as ZIP | 5 GB (pre-flight check) |
+| **Bulk Favorites** | Download selected photos as ZIP | 200 photos |
+
+Each mode can be enabled for:
+- `clients` - Primary clients only
+- `guests` - Guests only
+- `both` - Both clients and guests
+
+### Safety Guarantees
+
+- **Sequential ZIP streaming** - O(1) memory, backpressure-aware
+- **10-minute hard timeout** - Prevents runaway requests
+- **Abort on disconnect** - Protects Cloud Run CPU
+- **5 GB size guard** - Pre-flight check before streaming
+
+---
+
+## Upload Batching
+
+Bulk uploads are validated and processed with controlled concurrency:
+
+| Limit | Value |
+|-------|-------|
+| Max file size | 20 MB |
+| Max files per batch | 50 |
+| Parallel uploads (desktop) | 4 |
+| Parallel uploads (mobile) | 2 |
+| Allowed formats | JPEG, PNG, WebP, HEIC |
+
+### Upload Flow
+
+1. **Client-side validation** - Size, MIME type checked before upload
+2. **Batch splitting** - Files split into 50-file batches
+3. **Concurrent upload** - 4 files processed in parallel per batch
+4. **Progress tracking** - Real-time batch/total progress
+5. **Retry support** - Failed files can be retried without re-uploading successful ones
+
+---
+
+## Share URLs
+
+Galleries can be shared via three URL types (priority order):
+
+1. **Custom Domain** (highest) - `https://gallery.mystudio.com/g/wedding-2024`
+2. **Short Link** - `https://pickal.app/my-studio/g/wedding-2024`
+3. **Default UUID** (lowest) - `https://pickal.app/g/abc123-uuid`
+
+The share modal auto-selects the best available option and remembers user preferences.
+
 
 ## API Endpoints
 

@@ -18,6 +18,11 @@ import {
 } from '../middleware/auth.middleware.js';
 import { badRequest, notFound, forbidden } from '../middleware/error.middleware.js';
 import { getFaceRecognitionService, getStorageService } from '../services/index.js';
+import {
+    DownloadSettings,
+    getEffectiveDownloads,
+    sanitizeDownloadsForClient
+} from '../types/download-settings.js';
 
 const router = Router();
 
@@ -44,11 +49,30 @@ const createGallerySchema = z.object({
     internalNotes: z.string().max(2000).optional(),
 });
 
+// DOWNLOAD_CONTROLS_V1: Validation schema for download settings
+const downloadAllowedForSchema = z.enum(['clients', 'guests', 'both']);
+const downloadSettingsSchema = z.object({
+    individual: z.object({
+        enabled: z.boolean(),
+        allowedFor: downloadAllowedForSchema
+    }).optional(),
+    bulkAll: z.object({
+        enabled: z.boolean(),
+        allowedFor: downloadAllowedForSchema
+    }).optional(),
+    bulkFavorites: z.object({
+        enabled: z.boolean(),
+        allowedFor: downloadAllowedForSchema
+        // maxCount intentionally not accepted from client - server enforces
+    }).optional()
+}).optional();
+
 const updateGallerySchema = z.object({
     name: z.string().min(1).max(100).optional(),
     description: z.string().max(500).optional(),
     eventDate: z.string().datetime().optional(),
-    downloadsEnabled: z.boolean().optional(),
+    // DOWNLOAD_CONTROLS_V1: New structured download settings
+    downloads: downloadSettingsSchema,
     downloadResolution: z.enum(['web', 'original']).optional(),
     selectionState: z.enum(['DISABLED', 'OPEN', 'LOCKED']).optional(),
     commentsEnabled: z.boolean().optional(),
@@ -99,7 +123,7 @@ router.get('/:id/public-config', async (req: AuthenticatedRequest, res: Response
                 name: true,
                 eventDate: true,
                 selfieMatchingEnabled: true,
-                downloadsEnabled: true,
+                downloads: true, // DOWNLOAD_CONTROLS_V1
                 accessModes: true,
                 coverPhotoId: true,
                 photographer: {
@@ -134,13 +158,17 @@ router.get('/:id/public-config', async (req: AuthenticatedRequest, res: Response
 
         console.log(`[PUBLIC] Config request for gallery ${id}: selfieMatchingEnabled=${gallery.selfieMatchingEnabled}`);
 
+        // DOWNLOAD_CONTROLS_V1: Sanitize downloads for public response
+        const effectiveDownloads = getEffectiveDownloads(gallery.downloads as Partial<DownloadSettings>);
+        const sanitizedDownloads = sanitizeDownloadsForClient(effectiveDownloads);
+
         res.json({
             galleryId: gallery.id,
             galleryName: gallery.name,
             eventDate: gallery.eventDate,
             coverPhotoUrl,
             selfieMatchingEnabled: gallery.selfieMatchingEnabled,
-            downloadsEnabled: gallery.downloadsEnabled,
+            downloads: sanitizedDownloads, // DOWNLOAD_CONTROLS_V1
             accessModes: gallery.accessModes,
             studio: {
                 name: gallery.photographer.businessName || gallery.photographer.name,
@@ -209,7 +237,7 @@ router.get('/', requirePhotographer, async (req: AuthenticatedRequest, res: Resp
                 description: true,
                 eventDate: true,
                 privateKey: true,
-                downloadsEnabled: true,
+                downloads: true, // DOWNLOAD_CONTROLS_V1
                 selectionState: true,
                 createdAt: true,
                 updatedAt: true,
@@ -271,7 +299,7 @@ router.post('/', requirePhotographer, async (req: AuthenticatedRequest, res: Res
                 eventDate: true,
                 privateKey: true,
                 accessModes: true,
-                downloadsEnabled: true,
+                downloads: true, // DOWNLOAD_CONTROLS_V1
                 downloadResolution: true,
                 selectionState: true,
                 commentsEnabled: true,
@@ -441,7 +469,24 @@ router.patch('/:id', requirePhotographer, async (req: AuthenticatedRequest, res:
                 name: data.name,
                 description: data.description,
                 eventDate: data.eventDate ? new Date(data.eventDate) : undefined,
-                downloadsEnabled: data.downloadsEnabled,
+                // DOWNLOAD_CONTROLS_V1: Merge new settings with existing defaults
+                downloads: data.downloads ? {
+                    ...getEffectiveDownloads(null), // Start with defaults
+                    ...data.downloads,
+                    individual: data.downloads.individual ? {
+                        ...getEffectiveDownloads(null).individual,
+                        ...data.downloads.individual
+                    } : undefined,
+                    bulkAll: data.downloads.bulkAll ? {
+                        ...getEffectiveDownloads(null).bulkAll,
+                        ...data.downloads.bulkAll
+                    } : undefined,
+                    bulkFavorites: data.downloads.bulkFavorites ? {
+                        ...getEffectiveDownloads(null).bulkFavorites,
+                        ...data.downloads.bulkFavorites,
+                        maxCount: 200 // Always enforce server-side
+                    } : undefined,
+                } : undefined,
                 downloadResolution: data.downloadResolution,
                 selectionState: data.selectionState,
                 commentsEnabled: data.commentsEnabled,

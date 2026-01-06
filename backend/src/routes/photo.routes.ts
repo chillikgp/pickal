@@ -17,11 +17,17 @@ import {
     requireAnyAuth,
     AuthenticatedRequest,
     canGuestAccessPhoto,
-    isDownloadEnabled,
 } from '../middleware/auth.middleware.js';
 import { badRequest, notFound, forbidden } from '../middleware/error.middleware.js';
 import { getStorageService, getFaceRecognitionService } from '../services/index.js';
 import { imageService } from '../services/image.service.js';
+import {
+    DownloadSettings,
+    getEffectiveDownloads,
+    checkDownloadAllowed,
+    DOWNLOAD_ERROR_CODES,
+    MAX_FAVORITES_DOWNLOAD,
+} from '../types/download-settings.js';
 
 const router = Router();
 
@@ -338,7 +344,7 @@ router.get('/:id', requireAnyAuth, async (req: AuthenticatedRequest, res: Respon
                     select: {
                         id: true,
                         photographerId: true,
-                        downloadsEnabled: true,
+                        downloads: true, // DOWNLOAD_CONTROLS_V1
                         downloadResolution: true,
                     },
                 },
@@ -392,7 +398,8 @@ router.get('/:id', requireAnyAuth, async (req: AuthenticatedRequest, res: Respon
                 webUrl,
                 gallery: undefined, // Don't expose full gallery object
                 galleryId: photo.galleryId,
-                downloadsEnabled: photo.gallery.downloadsEnabled,
+                // DOWNLOAD_CONTROLS_V1: Expose downloads config for client
+                downloads: photo.gallery.downloads,
                 downloadResolution: photo.gallery.downloadResolution,
             },
         });
@@ -405,8 +412,9 @@ router.get('/:id', requireAnyAuth, async (req: AuthenticatedRequest, res: Respon
  * GET /api/photos/:id/download
  * Download photo (original or web quality)
  * 
- * PERMISSION:
- * - Downloads must be enabled by photographer
+ * DOWNLOAD_CONTROLS_V1: Role-based access control
+ * - individual.enabled must be true
+ * - User's role must match individual.allowedFor
  * - Guests can only download their matched photos
  */
 router.get('/:id/download', requireAnyAuth, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
@@ -420,7 +428,7 @@ router.get('/:id/download', requireAnyAuth, async (req: AuthenticatedRequest, re
                     select: {
                         id: true,
                         photographerId: true,
-                        downloadsEnabled: true,
+                        downloads: true, // DOWNLOAD_CONTROLS_V1
                         downloadResolution: true,
                     },
                 },
@@ -431,22 +439,35 @@ router.get('/:id/download', requireAnyAuth, async (req: AuthenticatedRequest, re
             throw notFound('Photo not found');
         }
 
-        // PERMISSION: Check downloads are enabled
-        if (!photo.gallery.downloadsEnabled) {
-            throw forbidden('Downloads are not enabled for this gallery');
-        }
+        // DOWNLOAD_CONTROLS_V1: Get effective download settings with defaults
+        const downloads = getEffectiveDownloads(photo.gallery.downloads as Partial<DownloadSettings>);
 
         // Check access based on role
         if (req.userRole === 'photographer') {
+            // Photographers can always download their own photos
             if (photo.gallery.photographerId !== req.photographer!.id) {
                 throw forbidden('You do not own this photo');
             }
         } else if (req.userRole === 'primary_client') {
+            // DOWNLOAD_CONTROLS_V1: Check individual download is enabled for clients
+            if (!checkDownloadAllowed(downloads, 'individual', 'primary_client')) {
+                throw forbidden({
+                    message: 'Individual downloads are not enabled for this gallery',
+                    code: DOWNLOAD_ERROR_CODES.INDIVIDUAL_DOWNLOAD_DISABLED
+                } as any);
+            }
             if (req.primaryClient!.galleryId !== photo.galleryId) {
                 throw forbidden('You do not have access to this photo');
             }
         } else if (req.userRole === 'guest') {
-            // PERMISSION: Guests can ONLY download photos they matched with
+            // DOWNLOAD_CONTROLS_V1: Check individual download is enabled for guests
+            if (!checkDownloadAllowed(downloads, 'individual', 'guest')) {
+                throw forbidden({
+                    message: 'Individual downloads are not enabled for guests',
+                    code: DOWNLOAD_ERROR_CODES.INDIVIDUAL_DOWNLOAD_DISABLED
+                } as any);
+            }
+            // Guests can ONLY download photos they matched with
             if (!canGuestAccessPhoto(req.guest, id)) {
                 throw forbidden('You can only download photos you appear in');
             }
@@ -470,23 +491,70 @@ router.get('/:id/download', requireAnyAuth, async (req: AuthenticatedRequest, re
  * GET /api/photos/gallery/:galleryId/download-all
  * P0-5: Download all photos in a gallery as a ZIP file
  * 
- * Streams photos directly from S3/storage and creates ZIP on-the-fly.
- * This avoids CORS issues because:
- * - Browser CORS only applies to browser-initiated cross-origin requests
- * - Backend-to-S3 requests have no CORS restrictions
- * - Backend streams ZIP directly to client as a same-origin response
- * 
- * PERMISSION:
- * - Downloads must be enabled by photographer
+ * DOWNLOAD_CONTROLS_V1: Role-based access control with abort-on-disconnect
+ * - bulkAll.enabled must be true
+ * - User's role must match bulkAll.allowedFor
  * - Guests can only download their matched photos
+ * - Aborts ZIP generation if client disconnects (protects Cloud Run CPU)
+ */
+// =============================================================================
+// BULK DOWNLOAD SAFETY CONSTANTS (v1.1)
+// =============================================================================
+const BULK_DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes hard timeout
+const BULK_DOWNLOAD_MAX_SIZE_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB soft limit
+
+// Structured log type for observability
+interface BulkDownloadLog {
+    galleryId: string;
+    photoCount: number;
+    estimatedSizeBytes: number;
+    actualBytesWritten: number;
+    durationMs: number;
+    aborted: boolean;
+    abortedReason?: 'client_disconnect' | 'timeout' | 'size_limit';
+}
+
+/**
+ * GET /api/photos/gallery/:galleryId/download-all
+ * Download all photos as a streaming ZIP file
+ * 
+ * SAFETY HARDENING v1.1:
+ * - Sequential file streaming (one photo at a time, backpressure-aware)
+ * - Hard server-side timeout (10 minutes)
+ * - Abort on client disconnect
+ * - Soft size guard (5 GB pre-flight check)
+ * - Structured observability logging
  */
 router.get('/gallery/:galleryId/download-all', requireAnyAuth, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
-    // Dynamic import of archiver to avoid issues if not installed
     const archiver = await import('archiver');
+    const startTime = Date.now();
+    let aborted = false;
+    let abortReason: 'client_disconnect' | 'timeout' | 'size_limit' | undefined;
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    let archive: ReturnType<typeof archiver.default> | undefined;
+
+    // Prepare log entry (will be emitted once on completion/abort)
+    const logEntry: BulkDownloadLog = {
+        galleryId: '',
+        photoCount: 0,
+        estimatedSizeBytes: 0,
+        actualBytesWritten: 0,
+        durationMs: 0,
+        aborted: false,
+    };
+
+    // Helper to emit structured log and cleanup
+    const finalize = () => {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        logEntry.durationMs = Date.now() - startTime;
+        logEntry.aborted = aborted;
+        if (abortReason) logEntry.abortedReason = abortReason;
+        console.log(`[BULK_DOWNLOAD_LOG] ${JSON.stringify(logEntry)}`);
+    };
 
     try {
         const { galleryId } = req.params;
-        console.log(`[DOWNLOAD_ALL] ZIP request for gallery ${galleryId} by ${req.userRole}`);
+        logEntry.galleryId = galleryId;
 
         const gallery = await prisma.gallery.findUnique({
             where: { id: galleryId },
@@ -494,7 +562,7 @@ router.get('/gallery/:galleryId/download-all', requireAnyAuth, async (req: Authe
                 id: true,
                 name: true,
                 photographerId: true,
-                downloadsEnabled: true,
+                downloads: true,
                 downloadResolution: true,
             },
         });
@@ -503,10 +571,8 @@ router.get('/gallery/:galleryId/download-all', requireAnyAuth, async (req: Authe
             throw notFound('Gallery not found');
         }
 
-        // PERMISSION: Check downloads are enabled
-        if (!gallery.downloadsEnabled) {
-            throw forbidden('Downloads are not enabled for this gallery');
-        }
+        // DOWNLOAD_CONTROLS_V1: Get effective download settings with defaults
+        const downloads = getEffectiveDownloads(gallery.downloads as Partial<DownloadSettings>);
 
         // Check gallery access based on role
         if (req.userRole === 'photographer') {
@@ -514,16 +580,28 @@ router.get('/gallery/:galleryId/download-all', requireAnyAuth, async (req: Authe
                 throw forbidden('You do not own this gallery');
             }
         } else if (req.userRole === 'primary_client') {
+            if (!checkDownloadAllowed(downloads, 'bulkAll', 'primary_client')) {
+                throw forbidden({
+                    message: 'Bulk downloads are not enabled for this gallery',
+                    code: DOWNLOAD_ERROR_CODES.BULK_DOWNLOAD_NOT_ALLOWED
+                } as any);
+            }
             if (req.primaryClient!.galleryId !== galleryId) {
                 throw forbidden('You do not have access to this gallery');
             }
         } else if (req.userRole === 'guest') {
+            if (!checkDownloadAllowed(downloads, 'bulkAll', 'guest')) {
+                throw forbidden({
+                    message: 'Bulk downloads are not enabled for guests',
+                    code: DOWNLOAD_ERROR_CODES.BULK_DOWNLOAD_NOT_ALLOWED
+                } as any);
+            }
             if (req.guest!.galleryId !== galleryId) {
                 throw forbidden('You do not have access to this gallery');
             }
         }
 
-        // Get all photos in gallery
+        // Get all photos with file sizes for pre-flight check
         let photos = await prisma.photo.findMany({
             where: { galleryId },
             select: {
@@ -531,6 +609,7 @@ router.get('/gallery/:galleryId/download-all', requireAnyAuth, async (req: Authe
                 filename: true,
                 originalKey: true,
                 webKey: true,
+                fileSize: true, // For size estimation
             },
             orderBy: [
                 { sortOrder: 'asc' },
@@ -542,17 +621,31 @@ router.get('/gallery/:galleryId/download-all', requireAnyAuth, async (req: Authe
         if (req.userRole === 'guest') {
             const matchedIds = req.guest!.matchedPhotoIds;
             photos = photos.filter(p => matchedIds.includes(p.id));
-            console.log(`[DOWNLOAD_ALL] Guest filtered to ${photos.length} matched photos`);
         }
 
         if (photos.length === 0) {
-            res.status(400).json({
-                error: 'No photos available for download'
-            });
+            res.status(400).json({ error: 'No photos available for download' });
             return;
         }
 
-        console.log(`[DOWNLOAD_ALL] Streaming ${photos.length} photos as ZIP`);
+        logEntry.photoCount = photos.length;
+
+        // SOFT SIZE GUARD: Estimate total size and reject if too large
+        const estimatedSize = photos.reduce((sum, p) => sum + (p.fileSize || 5 * 1024 * 1024), 0);
+        logEntry.estimatedSizeBytes = estimatedSize;
+
+        if (estimatedSize > BULK_DOWNLOAD_MAX_SIZE_BYTES) {
+            aborted = true;
+            abortReason = 'size_limit';
+            finalize();
+            res.status(400).json({
+                error: {
+                    message: 'Download size exceeds maximum allowed (5 GB). Please download in smaller batches.',
+                    code: 'SIZE_LIMIT_EXCEEDED'
+                }
+            });
+            return;
+        }
 
         // Sanitize gallery name for filename
         const safeGalleryName = gallery.name.replace(/[^a-zA-Z0-9-_ ]/g, '').trim() || 'gallery';
@@ -562,47 +655,322 @@ router.get('/gallery/:galleryId/download-all', requireAnyAuth, async (req: Authe
         res.setHeader('Content-Disposition', `attachment; filename="${safeGalleryName}.zip"`);
 
         // Create ZIP archive with compression
-        const archive = archiver.default('zip', {
-            zlib: { level: 5 } // Balanced compression
+        archive = archiver.default('zip', { zlib: { level: 5 } });
+
+        // HARD TIMEOUT: Abort after 10 minutes
+        timeoutHandle = setTimeout(() => {
+            if (!aborted && !res.writableEnded) {
+                aborted = true;
+                abortReason = 'timeout';
+                console.warn(`[BULK_DOWNLOAD_TIMEOUT] gallery=${galleryId} - aborting after ${BULK_DOWNLOAD_TIMEOUT_MS}ms`);
+                archive?.abort();
+                if (!res.headersSent) {
+                    res.status(504).json({ error: { message: 'Download timed out', code: 'TIMEOUT' } });
+                }
+            }
+        }, BULK_DOWNLOAD_TIMEOUT_MS);
+
+        // ABORT ON CLIENT DISCONNECT
+        req.on('close', () => {
+            if (!res.writableEnded && !aborted) {
+                aborted = true;
+                abortReason = 'client_disconnect';
+                archive?.abort();
+            }
         });
 
         // Handle archive errors
         archive.on('error', (err: Error) => {
-            console.error('[DOWNLOAD_ALL] Archive error:', err);
+            console.error('[BULK_DOWNLOAD_ERROR] Archive error:', err);
             if (!res.headersSent) {
                 res.status(500).json({ error: 'Failed to create ZIP archive' });
             }
         });
 
+        // Track bytes written
+        archive.on('end', () => {
+            logEntry.actualBytesWritten = archive?.pointer() || 0;
+        });
+
         // Pipe archive to response
         archive.pipe(res);
 
-        // Add each photo to the archive
+        // SEQUENTIAL STREAMING: Process one photo at a time with backpressure
         const storageService = getStorageService();
         for (let i = 0; i < photos.length; i++) {
+            // Check abort before each file
+            if (aborted) break;
+
             const photo = photos[i];
             const key = gallery.downloadResolution === 'original' ? photo.originalKey : photo.webKey;
 
             try {
-                // Get stream from storage (S3 or local)
                 const stream = await storageService.getStream(key);
-
-                // Add to archive with a clean filename (include index to avoid duplicates)
                 const ext = photo.filename.split('.').pop() || 'jpg';
                 const cleanName = photo.filename.replace(/[^a-zA-Z0-9-_ .]/g, '').trim();
                 const archiveName = cleanName || `photo_${i + 1}.${ext}`;
 
-                archive.append(stream, { name: archiveName });
+                // Append and WAIT for stream to complete (backpressure-aware)
+                await new Promise<void>((resolve, reject) => {
+                    stream.on('error', reject);
+                    stream.on('end', resolve);
+                    archive!.append(stream, { name: archiveName });
+                });
             } catch (err) {
-                console.error(`[DOWNLOAD_ALL] Failed to add ${photo.filename}:`, err);
+                console.error(`[BULK_DOWNLOAD_ERROR] Failed to add ${photo.filename}:`, err);
                 // Continue with other photos
             }
         }
 
-        // Finalize the archive (triggers the response)
-        await archive.finalize();
-        console.log(`[DOWNLOAD_ALL] ZIP archive finalized (${photos.length} files)`);
+        // Finalize the archive
+        if (!aborted) {
+            await archive.finalize();
+        }
+
+        finalize();
     } catch (error) {
+        finalize();
+        next(error);
+    }
+});
+
+/**
+ * POST /api/photos/gallery/:galleryId/download-favorites
+ * Download selected favorite photos as a streaming ZIP file
+ * 
+ * SAFETY HARDENING v1.1:
+ * - Sequential file streaming (one photo at a time, backpressure-aware)
+ * - Hard server-side timeout (10 minutes)
+ * - Abort on client disconnect
+ * - Soft size guard (5 GB pre-flight check)
+ * - Structured observability logging
+ * 
+ * PERMISSION:
+ * - bulkFavorites.enabled must be true
+ * - User's role must match bulkFavorites.allowedFor
+ * - Maximum 200 photos per request
+ */
+router.post('/gallery/:galleryId/download-favorites', requireAnyAuth, async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    const archiver = await import('archiver');
+    const startTime = Date.now();
+    let aborted = false;
+    let abortReason: 'client_disconnect' | 'timeout' | 'size_limit' | undefined;
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    let archive: ReturnType<typeof archiver.default> | undefined;
+
+    // Prepare structured log entry
+    const logEntry: BulkDownloadLog = {
+        galleryId: '',
+        photoCount: 0,
+        estimatedSizeBytes: 0,
+        actualBytesWritten: 0,
+        durationMs: 0,
+        aborted: false,
+    };
+
+    // Helper to emit structured log and cleanup
+    const finalize = () => {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        logEntry.durationMs = Date.now() - startTime;
+        logEntry.aborted = aborted;
+        if (abortReason) logEntry.abortedReason = abortReason;
+        console.log(`[BULK_DOWNLOAD_LOG] favorites ${JSON.stringify(logEntry)}`);
+    };
+
+    try {
+        const { galleryId } = req.params;
+        const { photoIds } = req.body as { photoIds?: string[] };
+        logEntry.galleryId = galleryId;
+
+        // Validate request body
+        if (!photoIds || !Array.isArray(photoIds) || photoIds.length === 0) {
+            throw badRequest('photoIds must be a non-empty array of photo IDs');
+        }
+
+        // Enforce max count (200)
+        if (photoIds.length > MAX_FAVORITES_DOWNLOAD) {
+            throw forbidden({
+                message: `Cannot download more than ${MAX_FAVORITES_DOWNLOAD} photos at once`,
+                code: DOWNLOAD_ERROR_CODES.FAVORITES_LIMIT_EXCEEDED
+            } as any);
+        }
+
+        const gallery = await prisma.gallery.findUnique({
+            where: { id: galleryId },
+            select: {
+                id: true,
+                name: true,
+                photographerId: true,
+                downloads: true,
+                downloadResolution: true,
+            },
+        });
+
+        if (!gallery) {
+            throw notFound('Gallery not found');
+        }
+
+        const downloads = getEffectiveDownloads(gallery.downloads as Partial<DownloadSettings>);
+
+        // Check access based on role
+        if (req.userRole === 'photographer') {
+            if (gallery.photographerId !== req.photographer!.id) {
+                throw forbidden('You do not own this gallery');
+            }
+        } else if (req.userRole === 'primary_client') {
+            if (!checkDownloadAllowed(downloads, 'bulkFavorites', 'primary_client')) {
+                throw forbidden({
+                    message: 'Favorites download is not enabled for this gallery',
+                    code: DOWNLOAD_ERROR_CODES.BULK_DOWNLOAD_NOT_ALLOWED
+                } as any);
+            }
+            if (req.primaryClient!.galleryId !== galleryId) {
+                throw forbidden('You do not have access to this gallery');
+            }
+        } else if (req.userRole === 'guest') {
+            if (!checkDownloadAllowed(downloads, 'bulkFavorites', 'guest')) {
+                throw forbidden({
+                    message: 'Favorites download is not enabled for guests',
+                    code: DOWNLOAD_ERROR_CODES.BULK_DOWNLOAD_NOT_ALLOWED
+                } as any);
+            }
+            if (req.guest!.galleryId !== galleryId) {
+                throw forbidden('You do not have access to this gallery');
+            }
+        }
+
+        // Get requested photos with file sizes for pre-flight check
+        let photos = await prisma.photo.findMany({
+            where: {
+                galleryId,
+                id: { in: photoIds }
+            },
+            select: {
+                id: true,
+                filename: true,
+                originalKey: true,
+                webKey: true,
+                fileSize: true, // For size estimation
+            },
+            orderBy: [
+                { sortOrder: 'asc' },
+                { createdAt: 'asc' },
+            ],
+        });
+
+        // PERMISSION: Guests can only download their matched photos
+        if (req.userRole === 'guest') {
+            const matchedIds = req.guest!.matchedPhotoIds;
+            photos = photos.filter(p => matchedIds.includes(p.id));
+        }
+
+        if (photos.length === 0) {
+            res.status(400).json({ error: 'No photos available for download' });
+            return;
+        }
+
+        logEntry.photoCount = photos.length;
+
+        // SOFT SIZE GUARD: Estimate total size and reject if too large
+        const estimatedSize = photos.reduce((sum, p) => sum + (p.fileSize || 5 * 1024 * 1024), 0);
+        logEntry.estimatedSizeBytes = estimatedSize;
+
+        if (estimatedSize > BULK_DOWNLOAD_MAX_SIZE_BYTES) {
+            aborted = true;
+            abortReason = 'size_limit';
+            finalize();
+            res.status(400).json({
+                error: {
+                    message: 'Download size exceeds maximum allowed (5 GB). Please download in smaller batches.',
+                    code: 'SIZE_LIMIT_EXCEEDED'
+                }
+            });
+            return;
+        }
+
+        // Sanitize gallery name for filename
+        const safeGalleryName = gallery.name.replace(/[^a-zA-Z0-9-_ ]/g, '').trim() || 'favorites';
+
+        // Set headers for ZIP download
+        res.setHeader('Content-Type', 'application/zip');
+        res.setHeader('Content-Disposition', `attachment; filename="${safeGalleryName}-favorites.zip"`);
+
+        // Create ZIP archive with compression
+        archive = archiver.default('zip', { zlib: { level: 5 } });
+
+        // HARD TIMEOUT: Abort after 10 minutes
+        timeoutHandle = setTimeout(() => {
+            if (!aborted && !res.writableEnded) {
+                aborted = true;
+                abortReason = 'timeout';
+                console.warn(`[BULK_DOWNLOAD_TIMEOUT] favorites gallery=${galleryId} - aborting after ${BULK_DOWNLOAD_TIMEOUT_MS}ms`);
+                archive?.abort();
+                if (!res.headersSent) {
+                    res.status(504).json({ error: { message: 'Download timed out', code: 'TIMEOUT' } });
+                }
+            }
+        }, BULK_DOWNLOAD_TIMEOUT_MS);
+
+        // ABORT ON CLIENT DISCONNECT
+        req.on('close', () => {
+            if (!res.writableEnded && !aborted) {
+                aborted = true;
+                abortReason = 'client_disconnect';
+                archive?.abort();
+            }
+        });
+
+        // Handle archive errors
+        archive.on('error', (err: Error) => {
+            console.error('[BULK_DOWNLOAD_ERROR] Archive error:', err);
+            if (!res.headersSent) {
+                res.status(500).json({ error: 'Failed to create ZIP archive' });
+            }
+        });
+
+        // Track bytes written
+        archive.on('end', () => {
+            logEntry.actualBytesWritten = archive?.pointer() || 0;
+        });
+
+        // Pipe archive to response
+        archive.pipe(res);
+
+        // SEQUENTIAL STREAMING: Process one photo at a time with backpressure
+        const storageService = getStorageService();
+        for (let i = 0; i < photos.length; i++) {
+            // Check abort before each file
+            if (aborted) break;
+
+            const photo = photos[i];
+            const key = gallery.downloadResolution === 'original' ? photo.originalKey : photo.webKey;
+
+            try {
+                const stream = await storageService.getStream(key);
+                const ext = photo.filename.split('.').pop() || 'jpg';
+                const cleanName = photo.filename.replace(/[^a-zA-Z0-9-_ .]/g, '').trim();
+                const archiveName = cleanName || `photo_${i + 1}.${ext}`;
+
+                // Append and WAIT for stream to complete (backpressure-aware)
+                await new Promise<void>((resolve, reject) => {
+                    stream.on('error', reject);
+                    stream.on('end', resolve);
+                    archive!.append(stream, { name: archiveName });
+                });
+            } catch (err) {
+                console.error(`[BULK_DOWNLOAD_ERROR] Failed to add ${photo.filename}:`, err);
+                // Continue with other photos
+            }
+        }
+
+        // Finalize the archive
+        if (!aborted) {
+            await archive.finalize();
+        }
+
+        finalize();
+    } catch (error) {
+        finalize();
         next(error);
     }
 });

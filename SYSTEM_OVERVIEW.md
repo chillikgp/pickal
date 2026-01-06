@@ -62,11 +62,56 @@ flowchart LR
 - **State Management**: Frontend caches loaded photos per-section to allow instant tab switching.
 - **Consistency**: Sorting by `[sortOrder, createdAt, id]` ensuring stable cursors.
  
-### Download All
-- **Method**: Streaming ZIP generation (Server-side).
-- **Flow**: Client req -> Server (Auth verify) -> S3 Stream -> Archiver (ZIP) -> Client Response Pipe.
-- **Benefit**: Low memory footprint (no buffering entire ZIP), supports large galleries.
- 
+### Download Controls v1.1
+
+Three download modes with role-based permissions:
+
+| Mode | Description | Max Limit | Safety |
+|------|-------------|-----------|--------|
+| `individual` | Single photo | Unlimited | Signed URL, 5min expiry |
+| `bulkAll` | Full gallery ZIP | 5 GB | Sequential streaming |
+| `bulkFavorites` | Selected photos ZIP | 200 photos | Server-enforced limit |
+
+**Permission Check**: `checkDownloadAllowed(downloads, type, userRole)` in [download-settings.ts](file:///Users/saurav.sahu/Documents/randomprojects/pickal/backend/src/types/download-settings.ts)
+
+**Safety Guarantees**:
+- Sequential file streaming (backpressure-aware, O(1) memory)
+- Hard timeout: 10 minutes (`BULK_DOWNLOAD_TIMEOUT_MS`)
+- Abort on client disconnect (protects Cloud Run CPU)
+- Pre-flight size check (5 GB soft limit)
+
+**Observability**: `[BULK_DOWNLOAD_LOG]` JSON with `galleryId`, `photoCount`, `estimatedSizeBytes`, `actualBytesWritten`, `durationMs`, `aborted`, `abortedReason`
+
+### Upload Batching v1
+
+**Client-Side** ([upload-queue.ts](file:///Users/saurav.sahu/Documents/randomprojects/pickal/frontend/src/lib/upload-queue.ts)):
+- Validates size (20 MB) and MIME type before upload
+- Splits files into 50-file batches
+- Uploads with controlled concurrency (4 desktop / 2 mobile)
+- Tracks per-file status with retry support
+
+**Server-Side** ([photo.routes.ts](file:///Users/saurav.sahu/Documents/randomprojects/pickal/backend/src/routes/photo.routes.ts)):
+- Multer enforces size/count limits
+- Parallel image processing (web-optimized + LQIP)
+- Async face indexing (doesn't block response)
+
+### Share URL Priority
+
+Share modal selects URLs in priority order:
+
+1. **Custom Domain** → `https://gallery.studio.com/g/{slug}`
+2. **Short Link** → `https://pickal.app/{studioSlug}/g/{gallerySlug}`
+3. **Default UUID** → `https://pickal.app/g/{galleryId}`
+
+User preferences persisted in `localStorage` (`share_url_preference`, `share_mode_preference`).
+
+### Branding Auto-Save
+
+- Full-page editor at `/dashboard/branding`
+- Debounced auto-save (1 second delay)
+- Empty strings normalized to `null` before PATCH
+- Tabbed layout: Identity / Client Actions / Advanced
+
 ---
  
 ## 2. Limits & Guardrails
@@ -82,6 +127,11 @@ flowchart LR
 | **Web image max dimension** | 1920px | [image.service.ts:19-20](file:///Users/saurav.sahu/Documents/randomprojects/pickal/backend/src/services/image.service.ts#L19) | N/A | Change `WEB_MAX_WIDTH/HEIGHT` |
 | **Inline sections in header** | 4 | [GalleryHeader.tsx](file:///Users/saurav.sahu/Documents/randomprojects/pickal/frontend/src/components/GalleryHeader.tsx) | N/A | Change `MAX_INLINE_SECTIONS` |
 | **Pagination Page Size** | 50 | [page.tsx](file:///Users/saurav.sahu/Documents/randomprojects/pickal/frontend/src/app/g/%5Bid%5D/page.tsx) / [API](file:///Users/saurav.sahu/Documents/randomprojects/pickal/backend/src/routes/photo.routes.ts) | N/A | Update `limit` param in `loadSectionItems` |
+| **Bulk download timeout** | 10 min | [photo.routes.ts:503](file:///Users/saurav.sahu/Documents/randomprojects/pickal/backend/src/routes/photo.routes.ts#L503) | `[BULK_DOWNLOAD_TIMEOUT]` | Change `BULK_DOWNLOAD_TIMEOUT_MS` |
+| **Bulk download max size** | 5 GB | [photo.routes.ts:504](file:///Users/saurav.sahu/Documents/randomprojects/pickal/backend/src/routes/photo.routes.ts#L504) | `SIZE_LIMIT_EXCEEDED` | Change `BULK_DOWNLOAD_MAX_SIZE_BYTES` |
+| **Favorites download max** | 200 | [download-settings.ts:47](file:///Users/saurav.sahu/Documents/randomprojects/pickal/backend/src/types/download-settings.ts#L47) | `FAVORITES_LIMIT_EXCEEDED` | Change `MAX_FAVORITES_DOWNLOAD` |
+| **Upload concurrency (desktop)** | 4 | [upload-queue.ts:21](file:///Users/saurav.sahu/Documents/randomprojects/pickal/frontend/src/lib/upload-queue.ts#L21) | N/A | Change `MAX_PARALLEL_UPLOADS_DESKTOP` |
+| **Upload concurrency (mobile)** | 2 | [upload-queue.ts:22](file:///Users/saurav.sahu/Documents/randomprojects/pickal/frontend/src/lib/upload-queue.ts#L22) | N/A | Change `MAX_PARALLEL_UPLOADS_MOBILE` |
 
 ### Infrastructure Limits (Cloud Run)
 
@@ -110,6 +160,9 @@ flowchart LR
 ```
 [RATE_LIMIT]          → Selfie rate limits hit
 [UPLOAD_LIMIT]        → Upload limits hit
+[BULK_DOWNLOAD_LOG]   → Bulk download completed/aborted (JSON)
+[BULK_DOWNLOAD_TIMEOUT] → Download timed out (10 min)
+[BULK_DOWNLOAD_ERROR] → Download stream error
 Error:                → Application errors
 Memory limit          → Need to increase Cloud Run memory
 Timeout exceeded      → Need to increase Cloud Run timeout
@@ -209,7 +262,21 @@ erDiagram
 
 ---
 
-## 8. Quick Commands Reference
+## 8. Explicit Non-Goals (v1)
+
+These are intentional v1 scope decisions, not bugs:
+
+| Non-Goal | Reason | Future Consideration |
+|----------|--------|---------------------|
+| **Async job queue for downloads** | Streaming ZIP is memory-safe; jobs add operational complexity | v2 if galleries exceed 10K photos |
+| **Presigned S3 uploads** | Current backend-proxied upload works for 50-file batches | v2 for reducing backend load |
+| **CloudFront for downloads** | Direct S3 with signed URLs is sufficient for v1 traffic | v2 for global performance |
+| **Real-time upload progress** | Batch-level progress is informative enough | v2 with WebSockets |
+| **Unit tests** | Manual testing sufficient for v1 scope | Should add before v2 features |
+
+---
+
+## 9. Quick Commands Reference
 
 ```bash
 # View live logs

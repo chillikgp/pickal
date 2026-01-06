@@ -69,11 +69,13 @@ model Gallery {
   accessModes    GalleryAccessMode[] @default([PRIVATE_KEY, GUEST_SELFIE])
   
   // Feature toggles
-  downloadsEnabled    Boolean       @default(false)
-  downloadResolution  String        @default("web") // "web" or "original"
-  selectionState      SelectionState @default(DISABLED)
-  commentsEnabled     Boolean       @default(true)
-  selfieMatchingEnabled Boolean     @default(false) // P0-3: OFF by default for new galleries
+  // DOWNLOAD_CONTROLS_V1: New structured download settings
+  // Individual, bulk-all, bulk-favorites each with enabled flag and role restriction
+  downloads           Json              @default("{\"individual\":{\"enabled\":false,\"allowedFor\":\"clients\"},\"bulkAll\":{\"enabled\":false,\"allowedFor\":\"clients\"},\"bulkFavorites\":{\"enabled\":false,\"allowedFor\":\"clients\",\"maxCount\":200}}")
+  downloadResolution  String            @default("web") // "web" or "original"
+  selectionState      SelectionState    @default(DISABLED)
+  commentsEnabled     Boolean           @default(true)
+  selfieMatchingEnabled Boolean         @default(false) // P0-3: OFF by default for new galleries
   
   // Cover photo for hero section
   coverPhotoId        String?
