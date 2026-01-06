@@ -297,7 +297,7 @@ export default function BrandingPage() {
                     </div>
                     <div className="p-8 flex flex-col items-center justify-center text-center space-y-4 bg-muted/10">
                         <Avatar className="w-20 h-20 border-2 border-background shadow-sm">
-                            <AvatarImage src={formData.logoUrl} />
+                            <AvatarImage src={formData.logoUrl || undefined} />
                             <AvatarFallback>{formData.businessName?.substring(0, 2).toUpperCase() || 'ST'}</AvatarFallback>
                         </Avatar>
                         <div>
