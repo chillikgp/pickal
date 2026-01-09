@@ -1036,10 +1036,10 @@ export default function ClientGalleryPage() {
                                         loading="lazy"
                                     />
 
-                                    {/* Selection Heart */}
+                                    {/* Selection Heart - fades in after images load */}
                                     {canSelect && (
                                         <button
-                                            className="absolute top-3 right-3 z-10 p-1.5 rounded-full bg-white/80 backdrop-blur-sm shadow-md hover:bg-white transition-all hover:scale-110"
+                                            className="absolute top-3 right-3 z-10 p-1.5 rounded-full bg-white/80 backdrop-blur-sm shadow-md hover:bg-white transition-all hover:scale-110 animate-in fade-in duration-300 delay-200"
                                             onClick={(e) => {
                                                 e.stopPropagation();
                                                 toggleSelection(photo.id);

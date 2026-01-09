@@ -827,7 +827,7 @@ export default function GalleryDetailPage() {
             <main className="container mx-auto px-4 py-8">
                 {/* Stats */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
-                    <Card><CardContent className="pt-4"><div className="text-2xl font-bold">{photos.length}</div><div className="text-sm text-muted-foreground">Photos</div></CardContent></Card>
+                    <Card><CardContent className="pt-4"><div className="text-2xl font-bold">{gallery?.photoCount || 0}</div><div className="text-sm text-muted-foreground">Photos</div></CardContent></Card>
                     <Card><CardContent className="pt-4"><div className="text-2xl font-bold">{gallery._count?.primaryClients || 0}</div><div className="text-sm text-muted-foreground">Clients</div></CardContent></Card>
                     <Card><CardContent className="pt-4"><div className="text-2xl font-bold">{gallery._count?.guests || 0}</div><div className="text-sm text-muted-foreground">Guests</div></CardContent></Card>
                 </div>

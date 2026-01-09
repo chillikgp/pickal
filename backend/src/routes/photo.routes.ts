@@ -315,7 +315,7 @@ router.get('/gallery/:galleryId', requireAnyAuth, async (req: AuthenticatedReque
             },
             orderBy: [
                 { sortOrder: 'asc' },
-                { createdAt: 'desc' },
+                { createdAt: 'asc' },
                 { id: 'asc' }
             ],
         });
