@@ -76,6 +76,7 @@ model Gallery {
   selectionState      SelectionState    @default(DISABLED)
   commentsEnabled     Boolean           @default(true)
   selfieMatchingEnabled Boolean         @default(false) // P0-3: OFF by default for new galleries
+  requireMobileForSelfie Boolean         @default(false) // Require mobile number for selfie access
   
   // Cover photo for hero section
   coverPhotoId        String?
@@ -212,7 +213,8 @@ model PrimaryClient {
   createdAt    DateTime @default(now())
   lastAccessAt DateTime @default(now())
 
-  selections    Selection[]
+
+
   comments      Comment[]
   printRequests PrintRequest[]
 
@@ -228,7 +230,7 @@ model PrimaryClient {
 model Guest {
   id            String   @id @default(uuid())
   sessionToken  String   @unique @default(uuid())
-  mobileNumber  String
+  mobileNumber  String?  // Optional: depends on gallery.requireMobileForSelfie toggle
   
   // Reference to the selfie used for matching (stored in S3)
   selfieKey     String?
@@ -261,6 +263,9 @@ model GuestSelfieFace {
   galleryId   String
   gallery     Gallery  @relation(fields: [galleryId], references: [id], onDelete: Cascade)
   
+  mobileNumber      String?  // For mobile-based selfie reuse lookup (nullable)
+  guestSessionToken String?  // For session-based selfie reuse when mobile absent
+  selfieS3Key String?   // Store S3 key for web-optimized display image
   faceId      String   // Rekognition FaceId from SearchFacesByImage
   faceHash    String   // Perceptual hash of selfie image
   
@@ -270,8 +275,10 @@ model GuestSelfieFace {
   createdAt   DateTime @default(now())
   lastUsedAt  DateTime @default(now())
 
-  @@unique([galleryId, faceHash])
+  @@unique([galleryId, faceHash]) // Hash deduplication (existing)
   @@index([galleryId])
+  @@index([galleryId, mobileNumber]) // Mobile-based lookup index
+  @@index([galleryId, guestSessionToken]) // Session-based lookup index (NEW)
   @@map("guest_selfie_faces")
 }
 
@@ -302,20 +309,14 @@ model SelfieRateLimit {
 model Selection {
   id              String   @id @default(uuid())
   
-  photoId         String
+  photoId         String   @unique // One selection per photo (Gallery-level)
   photo           Photo    @relation(fields: [photoId], references: [id], onDelete: Cascade)
   
-  primaryClientId String
-  primaryClient   PrimaryClient @relation(fields: [primaryClientId], references: [id], onDelete: Cascade)
-  
-  // Session tracking for audit trail
-  addedBySessionId String  // Reference to the session that created this selection
+  // Removed primaryClientId and addedBySessionId for gallery-level selection
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
-  @@unique([photoId, primaryClientId])
-  @@index([primaryClientId])
   @@index([photoId])
   @@map("selections")
 }

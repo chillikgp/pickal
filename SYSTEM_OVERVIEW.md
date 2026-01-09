@@ -185,7 +185,7 @@ Timeout exceeded      → Need to increase Cloud Run timeout
 | `guests` | Selfie-based gallery viewers | `id`, `sessionToken`, `mobileNumber`, `selfieKey`, `matchedPhotoIds`, `galleryId` |
 | `guest_selfie_faces` | Cached selfie-face mappings | `id`, `galleryId`, `faceId`, `faceHash`, `matchedPhotoIds` |
 | `selfie_rate_limits` | Rate limit tracking | `id`, `galleryId`, `guestSessionId`, `attemptCount`, `windowStart` |
-| `selections` | Primary client photo selections | `id`, `photoId`, `primaryClientId`, `addedBySessionId` |
+| `selections` | Gallery-level photo selections | `id`, `photoId` (unique) |
 | `comments` | Photo comments | `id`, `content`, `photoId`, `primaryClientId` |
 | `print_requests` | Print order requests | `id`, `status`, `quantity`, `size`, `photoId`, `primaryClientId`, `guestId` |
 
@@ -203,9 +203,20 @@ erDiagram
     Photo ||--o{ Selection : selected_in
     Photo ||--o{ Comment : commented_on
     Photo ||--o{ PrintRequest : requested_for
-    PrimaryClient ||--o{ Selection : makes
     PrimaryClient ||--o{ Comment : writes
 ```
+
+### Selection Model (Gallery-Level)
+
+**Key Change**: Selections are now **gallery-level** (not user-scoped). One selection per photo.
+
+- **API**: `POST /api/selections/:photoId` with body `{ selected: boolean }`.
+- **Idempotent**: `selected: true` creates (ignores if exists), `selected: false` deletes (ignores if missing).
+- **Access**: Primary Clients only (Guests cannot select).
+- **Role Presentation**:
+  - **Clients**: See editable ❤️ heart icon.
+  - **Guests**: No selection UI.
+  - **Photographer**: See read-only ✅ "Selected" badge.
 
 ---
 

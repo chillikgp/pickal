@@ -226,13 +226,14 @@ router.get('/gallery/:galleryId', requireAnyAuth, async (req: AuthenticatedReque
         const cursor = req.query.cursor as string | undefined;
         const limit = parseInt(req.query.limit as string || '50', 10);
         const sectionId = req.query.sectionId as string | undefined;
+        const filter = req.query.filter as string | undefined;
 
         console.log(`[PHOTOS] GET /gallery/${galleryId} - cursor:${cursor} limit:${limit} section:${sectionId}`);
 
         // Verify access
         const gallery = await prisma.gallery.findUnique({
             where: { id: galleryId },
-            select: { photographerId: true },
+            select: { photographerId: true, coverPhotoId: true },
         });
 
         if (!gallery) {
@@ -274,6 +275,19 @@ router.get('/gallery/:galleryId', requireAnyAuth, async (req: AuthenticatedReque
             where.sectionId = sectionId;
         }
 
+        // Apply filters
+        if (filter === 'selected' || filter === 'favorites') {
+            where.selections = { some: {} };
+        } else if (filter === 'comments') {
+            where.comments = { some: {} };
+        } else if (filter === 'cover') {
+            if (gallery.coverPhotoId) {
+                where.id = gallery.coverPhotoId;
+            } else {
+                return res.json({ photos: [], nextCursor: null, totalCount: 0 });
+            }
+        }
+
         // Get photos with cursor pagination
         const items = await prisma.photo.findMany({
             where,
@@ -292,37 +306,59 @@ router.get('/gallery/:galleryId', requireAnyAuth, async (req: AuthenticatedReque
                 createdAt: true,
                 _count: {
                     select: {
-                        selections: true,
                         comments: true,
                     },
                 },
+                selections: { // Fetch selections to determine isSelected state
+                    select: { id: true }
+                }
             },
             orderBy: [
                 { sortOrder: 'asc' },
-                { createdAt: 'asc' },
-                { id: 'asc' }, // Ensure stable sorting for cursor
+                { createdAt: 'desc' },
+                { id: 'asc' }
             ],
         });
 
-        let nextCursor: string | null = null;
-        if (items.length > limit) {
-            const nextItem = items.pop(); // Remove the extra item
-            // The cursor for the next page is the ID of the last item in the CURRENT page
-            nextCursor = items[items.length - 1].id;
-        }
-
         // Add signed URLs
         const storageService = getStorageService();
-        const photosWithUrls = await Promise.all(
-            items.map(async (photo) => ({
+        const photosWithUrls = await Promise.all(items.map(async (photo) => {
+            const url = await storageService.getSignedUrl(photo.webKey);
+            return {
                 ...photo,
-                webUrl: await storageService.getSignedUrl(photo.webKey),
-            }))
-        );
+                webUrl: url,
+                originalFilename: photo.filename,
+                isCover: photo.id === gallery.coverPhotoId,
+
+                // Gallery-level selection state
+                isSelected: photo.selections.length > 0,
+
+                // Maintain favoritedCount for backward compatibility or UI (now just 0 or 1, or total selected?)
+                // User requirement: "Counts = number of selected photos" (Dashboard)
+                // "No isFavorited, no user-based computation"
+                // Let's remove favoritedCount from individual photo response if not needed, 
+                // OR set it to 1 if selected?
+                // Dashboard uses explicit total count which is separate.
+                // Attributes for UI:
+                commentCount: photo._count.comments,
+            };
+        }));
+
+        // Add this query to get the total count
+        const totalCount = await prisma.photo.count({ where });
+
+        let nextCursor: string | null = null;
+        if (items.length > limit) {
+            const nextItem = items.pop();
+            nextCursor = nextItem!.id;
+            // Remove the extra item from the response list
+            photosWithUrls.pop();
+        }
 
         res.json({
             photos: photosWithUrls,
-            nextCursor
+            nextCursor,
+            totalCount
         });
     } catch (error) {
         next(error);
@@ -352,7 +388,7 @@ router.get('/:id', requireAnyAuth, async (req: AuthenticatedRequest, res: Respon
                     select: { id: true, name: true },
                 },
                 selections: {
-                    select: { id: true, primaryClientId: true },
+                    select: { id: true },
                 },
                 comments: {
                     select: {

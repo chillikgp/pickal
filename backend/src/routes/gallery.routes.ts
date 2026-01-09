@@ -93,6 +93,8 @@ const updateGallerySchema = z.object({
         .optional(),
     // P0-2: Internal notes for photographer only
     internalNotes: z.string().max(2000).nullable().optional(),
+    // MOBILE_SELFIE_REUSE: Require mobile number for selfie access
+    requireMobileForSelfie: z.boolean().optional(),
 });
 
 // P0-1: Access schema supports both UUID privateKey and short password
@@ -123,6 +125,7 @@ router.get('/:id/public-config', async (req: AuthenticatedRequest, res: Response
                 name: true,
                 eventDate: true,
                 selfieMatchingEnabled: true,
+                requireMobileForSelfie: true, // MOBILE_SELFIE_REUSE
                 downloads: true, // DOWNLOAD_CONTROLS_V1
                 accessModes: true,
                 coverPhotoId: true,
@@ -168,6 +171,7 @@ router.get('/:id/public-config', async (req: AuthenticatedRequest, res: Response
             eventDate: gallery.eventDate,
             coverPhotoUrl,
             selfieMatchingEnabled: gallery.selfieMatchingEnabled,
+            requireMobileForSelfie: gallery.requireMobileForSelfie, // MOBILE_SELFIE_REUSE
             downloads: sanitizedDownloads, // DOWNLOAD_CONTROLS_V1
             accessModes: gallery.accessModes,
             studio: {
@@ -412,6 +416,7 @@ router.get('/:id', requireAnyAuth, async (req: AuthenticatedRequest, res: Respon
         // P0-2: Remove internal notes and sensitive fields for non-photographer users
         const response = {
             ...gallery,
+            photoCount: gallery._count?.photos || 0,
             coverPhoto,
             // P0-1: Allow authorized users (EXCEPT guests) to see access credentials for sharing
             privateKey: req.userRole !== 'guest' ? gallery.privateKey : undefined,
@@ -491,6 +496,7 @@ router.patch('/:id', requirePhotographer, async (req: AuthenticatedRequest, res:
                 selectionState: data.selectionState,
                 commentsEnabled: data.commentsEnabled,
                 selfieMatchingEnabled: data.selfieMatchingEnabled,
+                requireMobileForSelfie: data.requireMobileForSelfie, // MOBILE_SELFIE_REUSE
                 coverPhotoId: data.coverPhotoId,
                 // P0-1: Custom slug and password
                 customSlug: data.customSlug,
@@ -695,42 +701,31 @@ router.get('/:id/selections', requirePhotographer, async (req: AuthenticatedRequ
                         webKey: true,
                     },
                 },
-                primaryClient: {
-                    select: {
-                        id: true,
-                        name: true,
-                        email: true,
-                    },
-                },
+                // Removed primaryClient include
             },
             orderBy: { createdAt: 'desc' },
         });
 
-        // Calculate summary
+        // Calculate summary (Gallery-level selections)
         const summary = {
             totalSelections: selections.length,
             lastUpdated: selections.length > 0 ? selections[0].updatedAt : null,
-            byClient: selections.reduce((acc, sel) => {
-                const clientId = sel.primaryClient.id;
-                if (!acc[clientId]) {
-                    acc[clientId] = {
-                        client: sel.primaryClient,
-                        count: 0,
-                        lastUpdated: sel.updatedAt,
-                    };
-                }
-                acc[clientId].count++;
-                if (sel.updatedAt > acc[clientId].lastUpdated) {
-                    acc[clientId].lastUpdated = sel.updatedAt;
-                }
-                return acc;
-            }, {} as Record<string, any>),
+            byClient: {} // Deprecated/Empty as selections are now anonymous
         };
+
+        // Get total photo count for the gallery
+        const totalPhotoCount = await prisma.photo.count({
+            where: {
+                galleryId: id,
+            },
+        });
 
         res.json({
             selections,
             summary: {
                 ...summary,
+                photoCount: totalPhotoCount, // Add photoCount here
+                totalCount: totalPhotoCount, // Add totalCount here (assuming it's the same as photoCount for this context)
                 byClient: Object.values(summary.byClient),
             },
         });

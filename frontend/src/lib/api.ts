@@ -202,6 +202,7 @@ export interface Gallery {
     selectionState: 'DISABLED' | 'OPEN' | 'LOCKED';
     commentsEnabled: boolean;
     selfieMatchingEnabled?: boolean;
+    requireMobileForSelfie?: boolean;  // MOBILE_SELFIE_REUSE
     coverPhotoId?: string | null;
     coverPhoto?: Photo;
     photographer?: {
@@ -222,6 +223,7 @@ export interface Gallery {
         primaryClients: number;
         guests: number;
     };
+    photoCount?: number; // P0-5: Explicit count from backend
 }
 
 export interface Section {
@@ -279,6 +281,7 @@ export const galleryApi = {
             eventDate: string | null;
             coverPhotoUrl: string | null;
             selfieMatchingEnabled: boolean;
+            requireMobileForSelfie: boolean;  // MOBILE_SELFIE_REUSE
             // DOWNLOAD_CONTROLS_V1: Structured download settings (without maxCount)
             downloads: Omit<DownloadSettings, 'bulkFavorites'> & {
                 bulkFavorites: Omit<BulkFavoritesDownloadSettings, 'maxCount'>;
@@ -289,12 +292,34 @@ export const galleryApi = {
                 logoUrl: string | null;
                 websiteUrl: string | null;
                 reviewUrl: string | null;
-                whatsappNumber: string | null;
             };
         }>(
             `/api/galleries/${id}/public-config`,
             { useAuth: false }
         ),
+
+    // P0-6: Get cover photo ID for jumping
+    getCover: (id: string) =>
+        apiRequest<{ photoId: string; cursor: string }>(`/api/galleries/${id}/cover`),
+
+    // P0-6: Export selected photos to CSV
+    exportCsv: async (id: string, photoIds: string[]) => {
+        const token = getAuthToken();
+        const response = await fetch(`${API_URL}/api/galleries/${id}/photos/export-csv`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+            },
+            body: JSON.stringify({ photoIds })
+        });
+
+        if (!response.ok) {
+            throw new Error('Export failed');
+        }
+
+        return response.blob();
+    },
 };
 
 // ============================================================================
@@ -352,6 +377,11 @@ export interface Photo {
     sortOrder: number;
     sectionId?: string;
     createdAt: string;
+    // P0-6: Metadata for discoverability
+    originalFilename?: string;
+    isCover?: boolean;
+    isSelected?: boolean; // P0-11: Gallery-level selection state (shared)
+    commentCount?: number;
     _count?: {
         selections: number;
         comments: number;
@@ -374,13 +404,14 @@ export const photoApi = {
         return apiRequest<{ success: boolean; count: number; photos: Photo[] }>('/api/photos/upload', { method: 'POST', body: formData });
     },
 
-    getByGallery: (galleryId: string, params: { sectionId?: string; cursor?: string; limit?: number } = {}, useSession = false) => {
+    getByGallery: (galleryId: string, params: { sectionId?: string; cursor?: string; limit?: number; filter?: string } = {}, useSession = false) => {
         const query = new URLSearchParams();
         if (params.sectionId) query.append('sectionId', params.sectionId);
+        if (params.filter) query.append('filter', params.filter);
         if (params.cursor) query.append('cursor', params.cursor);
         if (params.limit) query.append('limit', params.limit.toString());
         const qs = query.toString();
-        return apiRequest<{ photos: Photo[]; nextCursor: string | null }>(`/api/photos/gallery/${galleryId}${qs ? `?${qs}` : ''}`, { useSession });
+        return apiRequest<{ photos: Photo[]; nextCursor: string | null; totalCount: number }>(`/api/photos/gallery/${galleryId}${qs ? `?${qs}` : ''}`, { useSession });
     },
 
     get: (id: string, useSession = false) =>
@@ -428,14 +459,13 @@ export const sectionApi = {
 // ============================================================================
 
 export const selectionApi = {
-    select: (photoId: string) =>
-        apiRequest<{ selection: unknown }>(`/api/selections/${photoId}`, { method: 'POST', useSession: true, useAuth: false }),
-
-    unselect: (photoId: string) =>
-        apiRequest<{ message: string }>(`/api/selections/${photoId}`, { method: 'DELETE', useSession: true, useAuth: false }),
-
-    getMy: () =>
-        apiRequest<{ selections: { photoId: string }[]; count: number }>('/api/selections/my', { useSession: true, useAuth: false }),
+    set: (photoId: string, selected: boolean) =>
+        apiRequest<{ selected: boolean; message: string }>(`/api/selections/${photoId}`, {
+            method: 'POST',
+            body: { selected },
+            useSession: true,
+            useAuth: false
+        }),
 };
 
 // ============================================================================
@@ -507,12 +537,38 @@ export const printApi = {
 // ============================================================================
 
 export const faceApi = {
-    guestAccess: (galleryId: string, mobileNumber: string, selfie: File) => {
+    // MOBILE_SELFIE_REUSE: Check if mobile number has existing selfie mapping
+    checkMobile: (galleryId: string, mobileNumber: string) =>
+        apiRequest<{
+            found: boolean;
+            sessionToken?: string;
+            matchedCount?: number;
+            gallery?: { id: string; name: string };
+            selfieUrl?: string; // NEW
+        }>('/api/face/check-mobile', {
+            method: 'POST',
+            body: { galleryId, mobileNumber },
+            useAuth: false,
+        }),
+
+    // MOBILE_SELFIE_REUSE: Invalidate selfie for "Change selfie" flow
+    invalidateSelfie: (galleryId: string, mobileNumber: string) =>
+        apiRequest<{ success: boolean; deletedCount: number }>('/api/face/invalidate-selfie', {
+            method: 'POST',
+            body: { galleryId, mobileNumber },
+            useAuth: false,
+        }),
+
+    // Guest access with selfie (mobileNumber optional, guestSessionToken for fallback ID)
+    guestAccess: (galleryId: string, mobileNumber: string | undefined, selfie: File, guestSessionToken: string) => {
         const formData = new FormData();
         formData.append('selfie', selfie);
         formData.append('galleryId', galleryId);
-        formData.append('mobileNumber', mobileNumber);
-        return apiRequest<{ sessionToken: string; matchedCount: number; gallery: { id: string; name: string } }>(
+        if (mobileNumber) {
+            formData.append('mobileNumber', mobileNumber);
+        }
+        formData.append('guestSessionToken', guestSessionToken);  // Always send for rate limiting
+        return apiRequest<{ sessionToken: string; matchedCount: number; gallery: { id: string; name: string }; selfieUrl?: string; }>(
             '/api/face/guest-access',
             { method: 'POST', body: formData, useAuth: false }
         );

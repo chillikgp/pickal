@@ -8,6 +8,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
+import sharp from 'sharp';
 import { prisma } from '../index.js';
 import { badRequest, notFound, forbidden } from '../middleware/error.middleware.js';
 import { getFaceRecognitionService, getStorageService } from '../services/index.js';
@@ -31,7 +32,8 @@ const upload = multer({
 
 const guestAccessSchema = z.object({
     galleryId: z.string().uuid(),
-    mobileNumber: z.string().min(10).max(15),
+    mobileNumber: z.string().min(10).max(15).optional(),
+    guestSessionToken: z.string().uuid().optional(),  // Browser-generated fallback ID
 });
 
 interface MulterRequest extends Request {
@@ -65,6 +67,7 @@ router.post(
                     accessModes: true,
                     name: true,
                     selfieMatchingEnabled: true,
+                    requireMobileForSelfie: true,
                 },
             });
 
@@ -82,34 +85,52 @@ router.post(
                 throw forbidden('Guest access is not enabled for this gallery');
             }
 
+            // Enforce mobile requirement if enabled
+            if (gallery.requireMobileForSelfie && !data.mobileNumber) {
+                return res.status(400).json({
+                    error: 'MOBILE_REQUIRED',
+                    message: 'Mobile number is required for selfie access'
+                });
+            }
+
+            // Compute robust guestSessionId
+            const normalizedMobile = data.mobileNumber?.replace(/\D/g, '') || '';
+            const guestSessionId = normalizedMobile
+                ? `${data.galleryId}:m:${normalizedMobile}`
+                : data.guestSessionToken
+                    ? `${data.galleryId}:s:${data.guestSessionToken}`
+                    : null;
+
+            // Validate BEFORE rate limiting
+            if (!guestSessionId) {
+                return res.status(400).json({
+                    error: 'INVALID_GUEST_SESSION',
+                    message: 'Either mobile number or session token is required'
+                });
+            }
+            console.log(`[FACE] Using guestSessionId: ${guestSessionId}`);
+
+            // Resize image for web optimization and consistency
+            const processedBuffer = await sharp(req.file.buffer)
+                .resize({ width: 1000, withoutEnlargement: true })
+                .jpeg({ quality: 80 })
+                .toBuffer();
+
             // Generate perceptual hash of the selfie
             const { generateImageHash } = await import('../services/hash.service.js');
-            const imageHash = await generateImageHash(req.file.buffer);
+            const imageHash = await generateImageHash(processedBuffer);
             console.log(`[FACE] Generated hash for selfie: ${imageHash}`);
 
             // Rate Limit Check (Postgres)
             const { RateLimitService } = await import('../services/rate-limit.service.js');
-            const rateLimitKey = `${data.galleryId}:${data.mobileNumber}`; // Or use just mobileNumber if global limit desired, or session ID if available. 
-            // NOTE: The requirements say "rate_limit_key = gallery_id + guest_session_id". 
-            // However, at this point (guest-access), we are CREATING a session, so we don't have a session ID yet.
-            // We can identify by mobile number + galleryId as a proxy for "guest user" before session creation.
-            // OR we can create the session first? But we want to block BEFORE expensive Rekognition.
-            //
-            // Let's use mobileNumber + galleryId as the persistent identity key for rate limiting 
-            // since that's what the user provides to "log in".
-            // The requirement "guest_session_id" might imply rate limiting *authenticated* requests?
-            // "A guest is identified using: Anonymous session ID (cookie or local storage) Fallback: IP address"
-            // "Constraint: Max 5 selfie attempts per user per hour per gallery"
-            // "A selfie attempt is counted when: A selfie image is accepted by the backend"
-            //
-            // If this endpoint IS the "attempt", then we need to rate limit here.
-            // We'll use a compisite key of galleryId + mobileNumber to identify the "User" attempting access.
-
-            const limitResult = await RateLimitService.checkSelfieLimit(data.galleryId, `${data.galleryId}:${data.mobileNumber}`);
+            const limitResult = await RateLimitService.checkSelfieLimit(data.galleryId, guestSessionId);
 
             if (!limitResult.allowed) {
-                console.warn(`[RATE_LIMIT] Selfie attempt blocked for gallery ${data.galleryId} (key: ${rateLimitKey})`);
-                // 429 Too Many Requests
+                console.warn(`[RATE_LIMIT] Selfie attempt blocked for gallery ${data.galleryId} (guestSessionId: ${guestSessionId})`);
+                // Handle invalid session vs rate limit exceeded
+                if (limitResult.error?.includes('INVALID_GUEST_SESSION')) {
+                    return res.status(400).json({ error: 'INVALID_GUEST_SESSION', message: limitResult.error });
+                }
                 return res.status(429).json({
                     error: 'RATE_LIMIT_EXCEEDED',
                     message: limitResult.error,
@@ -117,44 +138,72 @@ router.post(
                 });
             }
 
-            // Check cache for existing face detection
+            // Layered lookup for selfie reuse:
             const { selfieCacheService } = await import('../services/selfie-cache.service.js');
-            const cachedFace = await selfieCacheService.lookupCachedFace(data.galleryId, imageHash);
+            const storageService = getStorageService();
+
+            let cachedFace = null;
+            let selfieS3Key: string | null = null;
+            let selfieUrl: string | undefined;
+
+            // Priority 1: Mobile lookup
+            if (normalizedMobile) {
+                cachedFace = await selfieCacheService.lookupByMobile(data.galleryId, normalizedMobile);
+                if (cachedFace) {
+                    console.log(`[FACE] Mobile reuse HIT - gallery: ${data.galleryId}, mobile: ${normalizedMobile.slice(-4)}`);
+                }
+            }
+
+            // Priority 2: Session lookup
+            if (!cachedFace && data.guestSessionToken) {
+                cachedFace = await selfieCacheService.lookupBySessionToken(data.galleryId, data.guestSessionToken);
+                if (cachedFace) {
+                    console.log(`[FACE] Session reuse HIT - gallery: ${data.galleryId}, token: ${data.guestSessionToken.slice(0, 8)}...`);
+                }
+            }
+
+            // Priority 3: Hash lookup (existing behavior)
+            if (!cachedFace) {
+                cachedFace = await selfieCacheService.lookupCachedFace(data.galleryId, imageHash);
+                if (cachedFace) {
+                    console.log(`[FACE] Hash reuse HIT - gallery: ${data.galleryId}, hash: ${imageHash.slice(0, 8)}...`);
+                }
+            }
 
             let matchedPhotoIds: string[];
             let faceId: string;
             let cacheHit = false;
 
             if (cachedFace) {
-                // CACHE HIT: Reuse cached results, skip Rekognition
-                console.log(`[FACE] Cache HIT - gallery: ${data.galleryId}, hash: ${imageHash.slice(0, 8)}...`);
+                // CACHE HIT: Reuse cached results
                 console.log(`[FACE] Reusing cached faceId: ${cachedFace.faceId}, matchedPhotos: ${cachedFace.matchedPhotoIds.length}`);
 
                 matchedPhotoIds = cachedFace.matchedPhotoIds;
                 faceId = cachedFace.faceId;
+                selfieS3Key = cachedFace.selfieS3Key; // Retrieve existing key
                 cacheHit = true;
 
                 // Update last_used_at for cache tracking
                 await selfieCacheService.updateLastUsed(cachedFace.id);
             } else {
                 // CACHE MISS: Call Rekognition
-                console.log(`[FACE] Cache MISS - gallery: ${data.galleryId}, reason: cache_miss`);
+                console.log(`[FACE] Cache MISS - gallery: ${data.galleryId}, calling Rekognition`);
 
-                // Store selfie (only on cache miss to avoid redundant storage)
-                const storageService = getStorageService();
-                const selfieResult = await storageService.upload(
-                    req.file.buffer,
-                    `selfie-${Date.now()}.jpg`,
+                // Upload resized selfie and capture key
+                const uploadResult = await storageService.upload(
+                    processedBuffer,
+                    `selfie-${Date.now()}.jpg`, // filename is mostly ignored by storage service random key gen
                     'originals'
                 );
+                selfieS3Key = uploadResult.key;
+                console.log(`[FACE] Uploaded selfie to S3: ${selfieS3Key}`);
 
                 // Search for matching faces
                 const faceService = getFaceRecognitionService();
                 console.log(`[REKOGNITION] SearchFacesByImage - gallery: ${data.galleryId}, reason: cache_miss`);
-                console.log(`[FACE] Using provider: ${faceService.getProviderName()}`);
 
                 const matches = await faceService.searchFaces(
-                    req.file.buffer,
+                    processedBuffer,
                     data.galleryId,
                     80 // 80% threshold
                 );
@@ -163,9 +212,26 @@ router.post(
                 matchedPhotoIds = matches.map(m => m.photoId);
                 faceId = matches.length > 0 ? matches[0].matchedFaceId : `no-match-${Date.now()}`;
 
-                // Cache the result for future requests
-                await selfieCacheService.cacheFace(data.galleryId, imageHash, faceId, matchedPhotoIds);
-                console.log(`[FACE] Cached face result - hash: ${imageHash.slice(0, 8)}..., faceId: ${faceId}`);
+                // Cache the result (with S3 key)
+                await selfieCacheService.cacheFace(
+                    data.galleryId,
+                    imageHash,
+                    faceId,
+                    matchedPhotoIds,
+                    normalizedMobile || undefined,
+                    data.guestSessionToken,
+                    selfieS3Key
+                );
+                console.log(`[FACE] Cached face result - hash: ${imageHash.slice(0, 8)}..., faceId: ${faceId}, key: ${selfieS3Key}`);
+            }
+
+            // Generate signed URL if key exists
+            if (selfieS3Key) {
+                try {
+                    selfieUrl = await storageService.getSignedUrl(selfieS3Key);
+                } catch (err) {
+                    console.warn(`[FACE] Failed to generate signed URL for key ${selfieS3Key}:`, err);
+                }
             }
 
             // Get matched photo details
@@ -198,7 +264,8 @@ router.post(
                     id: gallery.id,
                     name: gallery.name,
                 },
-                cacheHit, // Expose for debugging/testing
+                selfieUrl, // Return signed URL
+                cacheHit,
             });
         } catch (error) {
             if (error instanceof z.ZodError) {
@@ -245,6 +312,139 @@ router.post('/update-matches', async (req: Request, res: Response, next: NextFun
         });
     } catch (error) {
         next(error);
+    }
+});
+
+// ============================================================================
+// MOBILE_SELFIE_REUSE: New endpoints for mobile-based selfie reuse
+// ============================================================================
+
+/**
+ * POST /api/face/check-mobile
+ * Check if a returning user exists for this mobile + gallery
+ * If yes, returns session without requiring selfie upload
+ * 
+ * MOBILE_SELFIE_REUSE: This is called BEFORE selfie upload to enable reuse
+ */
+router.post('/check-mobile', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const schema = z.object({
+            galleryId: z.string().uuid(),
+            mobileNumber: z.string().min(10).max(15),
+        });
+        const data = schema.parse(req.body);
+
+        // Verify gallery exists and allows selfie access
+        const gallery = await prisma.gallery.findUnique({
+            where: { id: data.galleryId },
+            select: {
+                id: true,
+                name: true,
+                selfieMatchingEnabled: true,
+            },
+        });
+
+        if (!gallery || !gallery.selfieMatchingEnabled) {
+            return res.json({ found: false });
+        }
+
+        // MOBILE REUSE LOOKUP
+        const existingSelfie = await prisma.guestSelfieFace.findFirst({
+            where: {
+                galleryId: data.galleryId,
+                mobileNumber: data.mobileNumber,
+            },
+            orderBy: { lastUsedAt: 'desc' },
+            select: {
+                id: true,
+                matchedPhotoIds: true,
+                selfieS3Key: true, // NEW
+            },
+        });
+
+        if (existingSelfie) {
+            console.log(`[FACE] Mobile reuse HIT - gallery: ${data.galleryId}, mobile: ${data.mobileNumber.slice(-4)}`);
+
+            // Update last used
+            await prisma.guestSelfieFace.update({
+                where: { id: existingSelfie.id },
+                data: { lastUsedAt: new Date() },
+            });
+
+            // Create guest session with cached matches
+            const guest = await prisma.guest.create({
+                data: {
+                    mobileNumber: data.mobileNumber,
+                    matchedPhotoIds: existingSelfie.matchedPhotoIds,
+                    galleryId: data.galleryId,
+                },
+                select: { sessionToken: true },
+            });
+
+            // Generate signed URL if key exists
+            let selfieUrl: string | undefined;
+            if (existingSelfie.selfieS3Key) {
+                try {
+                    const storageService = getStorageService();
+                    selfieUrl = await storageService.getSignedUrl(existingSelfie.selfieS3Key);
+                } catch (err) {
+                    console.warn(`[FACE] Failed to generate signed URL for key ${existingSelfie.selfieS3Key}:`, err);
+                }
+            }
+
+            return res.json({
+                found: true,
+                sessionToken: guest.sessionToken,
+                matchedCount: existingSelfie.matchedPhotoIds.length,
+                gallery: { id: gallery.id, name: gallery.name },
+                selfieUrl, // NEW
+            });
+        }
+
+        // No mobile match found
+        console.log(`[FACE] Mobile reuse MISS - gallery: ${data.galleryId}, mobile: ${data.mobileNumber.slice(-4)}`);
+        res.json({ found: false });
+    } catch (error) {
+        if (error instanceof z.ZodError) {
+            next(badRequest(error.errors[0].message));
+        } else {
+            next(error);
+        }
+    }
+});
+
+/**
+ * POST /api/face/invalidate-selfie
+ * Called when user clicks "Change selfie"
+ * Removes the mobile + hash mapping for THIS user only
+ * 
+ * MOBILE_SELFIE_REUSE: Allows user to re-upload selfie
+ */
+router.post('/invalidate-selfie', async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const schema = z.object({
+            galleryId: z.string().uuid(),
+            mobileNumber: z.string().min(10).max(15),
+        });
+        const data = schema.parse(req.body);
+
+        // Delete only THIS user's cached selfie for this gallery
+        const result = await prisma.guestSelfieFace.deleteMany({
+            where: {
+                galleryId: data.galleryId,
+                mobileNumber: data.mobileNumber,
+            },
+        });
+
+        console.log(`[FACE] Invalidated selfie for mobile: ${data.mobileNumber.slice(-4)} in gallery: ${data.galleryId} (deleted: ${result.count})`);
+
+        res.json({ success: true, deletedCount: result.count });
+    } catch (error) {
+        if (error instanceof z.ZodError) {
+            next(badRequest(error.errors[0].message));
+        } else {
+            next(error);
+        }
     }
 });
 

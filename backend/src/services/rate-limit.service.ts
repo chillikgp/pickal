@@ -16,6 +16,20 @@ export class RateLimitService {
      * Check and enforce rate limits for guest selfie attempts
      */
     static async checkSelfieLimit(galleryId: string, guestSessionId: string): Promise<RateLimitResult> {
+        // Guard: Return structured error for invalid guestSessionId (no throws)
+        if (!guestSessionId ||
+            guestSessionId.includes(':undefined') ||
+            guestSessionId.includes(':null') ||
+            guestSessionId.endsWith(':')) {
+            console.warn(`[RATE_LIMIT] Invalid guestSessionId: ${guestSessionId}`);
+            return {
+                allowed: false,
+                remaining: 0,
+                resetInSeconds: 0,
+                error: 'INVALID_GUEST_SESSION: Mobile number or session token required'
+            };
+        }
+
         const now = new Date();
         const windowStart = new Date(now.getTime() - this.WINDOW_SECONDS * 1000);
 

@@ -30,26 +30,28 @@ export default function GalleryDetailPage() {
     const [sections, setSections] = useState<Section[]>([]);
     const [isLoading, setIsLoading] = useState(true);
 
-    // Section management
+    // Pagination State
+    const [nextCursor, setNextCursor] = useState<string | null>(null);
+    const [totalCount, setTotalCount] = useState(0);
+    const [isLoadingMore, setIsLoadingMore] = useState(false);
+
     const [activeSection, setActiveSection] = useState<string>('all');
     const [newSectionName, setNewSectionName] = useState('');
     const [uploadSectionId, setUploadSectionId] = useState<string>('');
     const [isSectionDialogOpen, setIsSectionDialogOpen] = useState(false);
 
+    // Filter State
+    const [filter, setFilter] = useState<'all' | 'cover' | 'comments' | 'favorites' | 'selected'>('all');
+
     // Share Modal State
     const [isShareModalOpen, setIsShareModalOpen] = useState(false);
     const [photographer, setPhotographer] = useState<Photographer | null>(null);
 
-    // Fetch photographer details for sharing (custom domain, studio slug)
-    useEffect(() => {
-        authApi.me()
-            .then(({ photographer }) => setPhotographer(photographer))
-            .catch(() => {
-                // If fetch fails, we just don't set the photographer. 
-                // The Share modal degrades gracefully to use default URLs only.
-                console.warn('Failed to fetch photographer details for sharing');
-            });
-    }, []);
+    // Edit details state
+    const [editName, setEditName] = useState('');
+    const [editDescription, setEditDescription] = useState('');
+    const [editEventDate, setEditEventDate] = useState('');
+    const [isSavingDetails, setIsSavingDetails] = useState(false);
 
     // Settings state
     // DOWNLOAD_CONTROLS_V1: Structured download settings
@@ -65,6 +67,7 @@ export default function GalleryDetailPage() {
     const [downloadResolution, setDownloadResolution] = useState<'web' | 'original'>('web');
     const [selectionState, setSelectionState] = useState<'DISABLED' | 'OPEN' | 'LOCKED'>('DISABLED');
     const [selfieMatchingEnabled, setSelfieMatchingEnabled] = useState(true);
+    const [requireMobileForSelfie, setRequireMobileForSelfie] = useState(false);  // MOBILE_SELFIE_REUSE
 
     // P0-1: Custom slug and short password for easy sharing
     const [customSlug, setCustomSlug] = useState('');
@@ -74,33 +77,28 @@ export default function GalleryDetailPage() {
     // P0-2: Internal notes for photographer only
     const [internalNotes, setInternalNotes] = useState('');
 
-    // Edit details state
-    const [editName, setEditName] = useState('');
-    const [editDescription, setEditDescription] = useState('');
-    const [editEventDate, setEditEventDate] = useState('');
-    const [isSavingDetails, setIsSavingDetails] = useState(false);
-
-    const loadGallery = useCallback(async () => {
+    const loadGalleryDetails = useCallback(async () => {
         try {
-            const [galleryRes, photosRes] = await Promise.all([
-                galleryApi.get(galleryId),
-                photoApi.getByGallery(galleryId),
-            ]);
+            const galleryRes = await galleryApi.get(galleryId);
             setGallery(galleryRes.gallery);
-            setPhotos(photosRes.photos);
             setSections(galleryRes.gallery.sections || []);
+
             // DOWNLOAD_CONTROLS_V1: Load structured download settings
             if (galleryRes.gallery.downloads) {
                 setDownloads(galleryRes.gallery.downloads);
             }
             setDownloadResolution(galleryRes.gallery.downloadResolution);
             setSelectionState(galleryRes.gallery.selectionState);
-            setSelfieMatchingEnabled(galleryRes.gallery.selfieMatchingEnabled ?? false); // P0-3: New galleries default to false
+            setSelfieMatchingEnabled(galleryRes.gallery.selfieMatchingEnabled ?? false);
+            setRequireMobileForSelfie(galleryRes.gallery.requireMobileForSelfie ?? false);
+
             // P0-1: Load custom slug and password
             setCustomSlug(galleryRes.gallery.customSlug || '');
             setCustomPassword(galleryRes.gallery.customPassword || '');
+
             // P0-2: Load internal notes
             setInternalNotes(galleryRes.gallery.internalNotes || '');
+
             // Initialize edit fields
             setEditName(galleryRes.gallery.name);
             setEditDescription(galleryRes.gallery.description || '');
@@ -113,9 +111,87 @@ export default function GalleryDetailPage() {
         }
     }, [galleryId, router]);
 
+    // Fetch photos (Initial or Refresh)
+    const loadPhotos = useCallback(async (isRefresh = false) => {
+        try {
+            const apiFilter = filter === 'all' ? undefined : filter;
+            const section = activeSection === 'all' ? undefined : activeSection;
+
+            const res = await photoApi.getByGallery(galleryId, {
+                sectionId: section,
+                filter: apiFilter,
+                limit: 50
+            });
+
+            setPhotos(res.photos);
+            setNextCursor(res.nextCursor);
+            setTotalCount(res.totalCount);
+        } catch (error) {
+            console.error('Failed to load photos:', error);
+            toast.error('Failed to load photos');
+        }
+    }, [galleryId, activeSection, filter]);
+
+    // Load More (Infinite Scroll)
+    const loadMorePhotos = useCallback(async () => {
+        if (!nextCursor || isLoadingMore) return;
+
+        setIsLoadingMore(true);
+        try {
+            const apiFilter = filter === 'all' ? undefined : filter;
+            const section = activeSection === 'all' ? undefined : activeSection;
+
+            const res = await photoApi.getByGallery(galleryId, {
+                sectionId: section,
+                filter: apiFilter,
+                cursor: nextCursor,
+                limit: 50
+            });
+
+            setPhotos(prev => [...prev, ...res.photos]);
+            setNextCursor(res.nextCursor);
+        } catch (error) {
+            console.error('Failed to load more photos:', error);
+        } finally {
+            setIsLoadingMore(false);
+        }
+    }, [galleryId, nextCursor, isLoadingMore, activeSection, filter]);
+
+    const refreshAll = useCallback(() => {
+        loadGalleryDetails();
+        loadPhotos(true);
+    }, [loadGalleryDetails, loadPhotos]);
+
     useEffect(() => {
-        loadGallery();
-    }, [loadGallery]);
+        loadGalleryDetails();
+    }, [loadGalleryDetails]);
+
+    // Fetch photographer details
+    useEffect(() => {
+        authApi.me().then(({ photographer }) => setPhotographer(photographer)).catch(() => { });
+    }, []);
+
+    // Trigger photo reload when filters change
+    useEffect(() => {
+        loadPhotos();
+    }, [loadPhotos]);
+
+    // Intersection Observer for Infinite Scroll
+    useEffect(() => {
+        const observer = new IntersectionObserver(
+            (entries) => {
+                if (entries[0].isIntersecting && !isLoadingMore && nextCursor) {
+                    loadMorePhotos();
+                }
+            },
+            { threshold: 0.1, rootMargin: '100px' }
+        );
+
+        const sentinel = document.getElementById('scroll-sentinel');
+        if (sentinel) observer.observe(sentinel);
+
+        return () => observer.disconnect();
+    }, [nextCursor, isLoadingMore, loadMorePhotos]);
 
     // Comment state
     const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
@@ -138,29 +214,69 @@ export default function GalleryDetailPage() {
             await photoApi.delete(selectedPhoto.id);
             toast.success('Photo deleted');
             setSelectedPhoto(null);
-            loadGallery();
+            loadPhotos(true);
         } catch (error) {
             toast.error('Failed to delete photo');
         }
     };
 
     // Filter selections
-    const [viewSelectedOnly, setViewSelectedOnly] = useState(false);
 
     // Calculate selection stats
     const selectedPhotoCount = photos.filter(p => (p._count?.selections || 0) > 0).length;
+
+    // Handle CSV Export
+    const handleExportCsv = async () => {
+        try {
+            // Fetch all IDs matching current filter for export, or simplistic approach:
+            // Since we can't easily get *all* IDs without fetching, we might export *currently loaded*?
+            // User requirement said "Exports selected photos via API".
+            // Since we can't select individually yet, and filters are robust, 
+            // maybe we assume this button exports "Client Selections" specifically?
+            // "In selection view (filter=selected)... Add Download CSV button"
+
+            // For now, let's just fetch ALL IDs corresponding to 'selected' filter if in selected mode.
+            // Or if the requirement really implies fetching ALL, we can do a quick fetch of IDs.
+            // Implementation choice: Client-side fetch of all IDs is safer for small sets. 
+            // But let's export WHAT WE HAVE or fetch explicitly?
+            // Let's assume we export currently loaded for now OR fetch all IDs if possible.
+            // Actually, best UX: export ALL photos that match the criteria.
+            // But API takes IDs.
+            // Let's fetch all IDs matching 'selected' filter.
+            toast.loading('Preparing export...');
+            const res = await photoApi.getByGallery(galleryId, { filter: 'selected', limit: 10000 });
+            if (res.photos.length === 0) {
+                toast.dismiss();
+                toast.error('No selected photos to export');
+                return;
+            }
+            const blob = await galleryApi.exportCsv(galleryId, res.photos.map(p => p.id));
+
+            // Trigger download
+            const url = window.URL.createObjectURL(blob as Blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `gallery-${galleryId}-selected.csv`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+            toast.dismiss();
+            toast.success('Export complete');
+        } catch (e) {
+            toast.dismiss();
+            toast.error('Export failed');
+        }
+    };
     const totalSelections = photos.reduce((acc, p) => acc + (p._count?.selections || 0), 0);
 
-    // Filter photos by active section and selection status
-    const filteredPhotos = photos
-        .filter(p => activeSection === 'all' || p.sectionId === activeSection)
-        .filter(p => !viewSelectedOnly || (p._count?.selections || 0) > 0);
+
 
     // UPLOAD_BATCHING_V1: Use new upload hook for batching and concurrency
     const uploadState = useUpload({
         galleryId,
         sectionId: uploadSectionId || undefined,
-        onComplete: loadGallery,
+        onComplete: refreshAll,
     });
 
     // Handle file selection - start upload flow
@@ -189,7 +305,7 @@ export default function GalleryDetailPage() {
             toast.success('Section created');
             setNewSectionName('');
             setIsSectionDialogOpen(false);
-            loadGallery();
+            refreshAll();
         } catch (error) {
             toast.error('Failed to create section');
         }
@@ -202,7 +318,7 @@ export default function GalleryDetailPage() {
             await sectionApi.delete(sectionId);
             toast.success('Section deleted');
             if (activeSection === sectionId) setActiveSection('all');
-            loadGallery();
+            refreshAll();
         } catch (error) {
             toast.error('Failed to delete section');
         }
@@ -387,7 +503,7 @@ export default function GalleryDetailPage() {
                                                             try {
                                                                 await galleryApi.update(galleryId, { customSlug });
                                                                 toast.success('Slug saved');
-                                                                loadGallery();
+                                                                refreshAll();
                                                             } catch (error: any) {
                                                                 setSlugError(error.message || 'Failed to save slug');
                                                             }
@@ -428,7 +544,7 @@ export default function GalleryDetailPage() {
                                                             try {
                                                                 await galleryApi.update(galleryId, { customPassword });
                                                                 toast.success('Password saved');
-                                                                loadGallery();
+                                                                refreshAll();
                                                             } catch (error) {
                                                                 toast.error('Failed to save password');
                                                             }
@@ -461,7 +577,7 @@ export default function GalleryDetailPage() {
                                                             try {
                                                                 await galleryApi.update(galleryId, { internalNotes: internalNotes || null });
                                                                 toast.success('Notes saved');
-                                                                loadGallery();
+                                                                refreshAll();
                                                             } catch (error) {
                                                                 toast.error('Failed to save notes');
                                                             }
@@ -672,9 +788,30 @@ export default function GalleryDetailPage() {
                                                     onCheckedChange={(checked) => {
                                                         setSelfieMatchingEnabled(checked);
                                                         handleSettingUpdate({ selfieMatchingEnabled: checked });
+                                                        // Turn off requireMobileForSelfie if selfie matching is disabled
+                                                        if (!checked && requireMobileForSelfie) {
+                                                            setRequireMobileForSelfie(false);
+                                                            handleSettingUpdate({ requireMobileForSelfie: false });
+                                                        }
                                                     }}
                                                 />
                                             </div>
+                                            {/* MOBILE_SELFIE_REUSE: Nested toggle for requiring mobile number */}
+                                            {selfieMatchingEnabled && (
+                                                <div className="flex items-center justify-between ml-4 pl-4 border-l-2 border-muted">
+                                                    <div>
+                                                        <Label>Require mobile number</Label>
+                                                        <p className="text-xs text-muted-foreground">Guests must provide mobile number for selfie access</p>
+                                                    </div>
+                                                    <Switch
+                                                        checked={requireMobileForSelfie}
+                                                        onCheckedChange={(checked) => {
+                                                            setRequireMobileForSelfie(checked);
+                                                            handleSettingUpdate({ requireMobileForSelfie: checked });
+                                                        }}
+                                                    />
+                                                </div>
+                                            )}
                                             <div className="pt-4 border-t">
                                                 <Button variant="destructive" onClick={handleDelete} className="w-full">Delete Gallery</Button>
                                             </div>
@@ -693,21 +830,29 @@ export default function GalleryDetailPage() {
                     <Card><CardContent className="pt-4"><div className="text-2xl font-bold">{photos.length}</div><div className="text-sm text-muted-foreground">Photos</div></CardContent></Card>
                     <Card><CardContent className="pt-4"><div className="text-2xl font-bold">{gallery._count?.primaryClients || 0}</div><div className="text-sm text-muted-foreground">Clients</div></CardContent></Card>
                     <Card><CardContent className="pt-4"><div className="text-2xl font-bold">{gallery._count?.guests || 0}</div><div className="text-sm text-muted-foreground">Guests</div></CardContent></Card>
-                    <Card>
-                        <CardContent className="pt-4">
-                            <Badge variant={selectionState === 'OPEN' ? 'default' : 'secondary'}>{selectionState}</Badge>
-                            <div className="text-sm text-muted-foreground mt-1 mb-2">Selection Status</div>
+                </div>
+
+                {/* Filters & Actions */}
+                <div className="flex flex-wrap items-center gap-2 mb-6">
+                    <div className="flex bg-muted/20 p-1 rounded-lg">
+                        {['all', 'cover', 'comments', 'favorites', 'selected'].map((f) => (
                             <Button
-                                variant={viewSelectedOnly ? "default" : "outline"}
+                                key={f}
+                                variant={filter === f ? 'secondary' : 'ghost'}
                                 size="sm"
-                                className="w-full h-8 text-xs"
-                                onClick={() => setViewSelectedOnly(!viewSelectedOnly)}
-                                disabled={selectedPhotoCount === 0}
+                                onClick={() => setFilter(f as any)}
+                                className={`capitalize ${filter === f ? 'bg-white shadow-sm' : ''}`}
                             >
-                                {viewSelectedOnly ? 'Show All' : `View ${selectedPhotoCount} Selected`}
+                                {f}
                             </Button>
-                        </CardContent>
-                    </Card>
+                        ))}
+                    </div>
+
+                    {(filter === 'selected' || filter === 'favorites') && (
+                        <Button variant="outline" size="sm" onClick={handleExportCsv} className="ml-auto">
+                            Download CSV
+                        </Button>
+                    )}
                 </div>
 
                 {/* Upload Section */}
@@ -762,10 +907,10 @@ export default function GalleryDetailPage() {
 
                     <Tabs value={activeSection} onValueChange={setActiveSection}>
                         <TabsList className="flex-wrap h-auto">
-                            <TabsTrigger value="all">All Photos ({photos.length})</TabsTrigger>
+                            <TabsTrigger value="all">All Photos ({gallery?.photoCount || 0})</TabsTrigger>
                             {sections.map((section) => (
                                 <TabsTrigger key={section.id} value={section.id} className="group relative">
-                                    {section.name} ({photos.filter(p => p.sectionId === section.id).length})
+                                    {section.name} ({section._count?.photos || 0})
                                     <button className="ml-2 opacity-0 group-hover:opacity-100 text-destructive hover:text-destructive" onClick={(e) => { e.stopPropagation(); handleDeleteSection(section.id); }}>×</button>
                                 </TabsTrigger>
                             ))}
@@ -774,72 +919,76 @@ export default function GalleryDetailPage() {
                 </div>
 
                 {/* Photo Grid */}
-                {filteredPhotos.length === 0 ? (
+                {/* Photo Grid */}
+                {photos.length === 0 && !isLoading ? (
                     <Card className="text-center py-12">
                         <CardContent>
                             <div className="space-y-4">
                                 <div className="text-6xl">🖼️</div>
-                                <h3 className="text-xl font-semibold">No photos {viewSelectedOnly ? 'selected' : (activeSection !== 'all' ? 'in this section' : 'yet')}</h3>
-                                {viewSelectedOnly && <Button variant="link" onClick={() => setViewSelectedOnly(false)}>View All Photos</Button>}
-                                {!viewSelectedOnly && <p className="text-muted-foreground">Upload photos to this gallery</p>}
+                                <h3 className="text-xl font-semibold">No photos {filter !== 'all' ? `in ${filter}` : (activeSection !== 'all' ? 'in this section' : 'yet')}</h3>
+                                {filter !== 'all' && <Button variant="link" onClick={() => setFilter('all')}>View All Photos</Button>}
+                                {filter === 'all' && <p className="text-muted-foreground">Upload photos to this gallery</p>}
                             </div>
                         </CardContent>
                     </Card>
                 ) : (
-                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2">
-                        {filteredPhotos.map((photo) => {
-                            const selectionCount = photo._count?.selections || 0;
-                            const commentCount = photo._count?.comments || 0;
-                            return (
-                                <div
-                                    key={photo.id}
-                                    className={`aspect-square rounded-lg overflow-hidden bg-muted relative group cursor-pointer ${selectionCount > 0 ? 'ring-2 ring-primary ring-offset-2' : ''
-                                        }`}
-                                    onClick={() => setSelectedPhoto(photo)}
-                                >
-                                    {photo.lqipBase64 ? (
-                                        <img src={photo.webUrl || photo.lqipBase64} alt={photo.filename} className="w-full h-full object-cover" loading="lazy" />
-                                    ) : (
-                                        <Skeleton className="w-full h-full" />
-                                    )}
+                    <>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gridAutoFlow: 'row', gap: '8px' }}>
+                            {photos.map((photo) => {
+                                const isSelected = photo.isSelected || false;
+                                const commentCount = photo._count?.comments || 0;
+                                return (
+                                    <div
+                                        key={photo.id}
+                                        className={`aspect-square rounded-lg overflow-hidden bg-muted relative group cursor-pointer ${isSelected ? 'ring-2 ring-primary ring-offset-2' : ''
+                                            }`}
+                                        onClick={() => setSelectedPhoto(photo)}
+                                    >
+                                        {photo.lqipBase64 ? (
+                                            <img src={photo.webUrl || photo.lqipBase64} alt={photo.filename} className="w-full h-full object-cover" loading="lazy" />
+                                        ) : (
+                                            <Skeleton className="w-full h-full" />
+                                        )}
 
-                                    {/* Cover Photo Indicator */}
-                                    {gallery.coverPhotoId === photo.id && (
-                                        <div className="absolute top-2 left-2 z-10">
-                                            <Badge variant="secondary" className="shadow-md bg-yellow-500 text-white border-0">
-                                                ★ Cover
-                                            </Badge>
+                                        {/* Cover Photo Indicator */}
+                                        {photo.isCover && (
+                                            <div className="absolute top-2 left-2 z-10">
+                                                <Badge variant="secondary" className="shadow-md bg-yellow-500 text-white border-0">
+                                                    ★
+                                                </Badge>
+                                            </div>
+                                        )}
+
+                                        {/* Badges Container */}
+                                        <div className="absolute top-2 right-2 z-10 flex flex-col gap-1 items-end">
+                                            {/* Persistent Selection Indicator */}
+                                            {isSelected && (
+                                                <Badge variant="default" className="shadow-md border border-white/20 bg-green-500">
+                                                    ✅ Selected
+                                                </Badge>
+                                            )}
+                                            {/* Persistent Comment Indicator */}
+                                            {(photo.commentCount || 0) > 0 && (
+                                                <Badge variant="secondary" className="shadow-md">
+                                                    💬 {photo.commentCount}
+                                                </Badge>
+                                            )}
                                         </div>
-                                    )}
 
-                                    {/* Persistent Selection Indicator */}
-                                    {selectionCount > 0 && (
-                                        <div className="absolute top-2 right-2 z-10">
-                                            <Badge variant="default" className="shadow-md border border-white/20">
-                                                {selectionCount}
-                                            </Badge>
-                                        </div>
-                                    )}
-
-                                    {/* Persistent Comment Indicator */}
-                                    {commentCount > 0 && (
-                                        <div className="absolute bottom-2 left-2 z-10">
-                                            <Badge variant="secondary" className="shadow-md gap-1">
-                                                <span className="text-xs">💬</span> {commentCount}
-                                            </Badge>
-                                        </div>
-                                    )}
-
-                                    <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                        <div className="text-white text-xs space-y-1 text-center">
-                                            <div>{selectionCount} selections</div>
-                                            {commentCount > 0 && <div>{commentCount} comments</div>}
+                                        <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                            <div className="text-white text-xs space-y-1 text-center">
+                                                {isSelected && <div>Selected</div>}
+                                                {commentCount > 0 && <div>{commentCount} comments</div>}
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
-                            );
-                        })}
-                    </div>
+                                );
+                            })}
+                        </div>
+                        {/* Infinite Scroll Sentinel */}
+                        <div id="scroll-sentinel" className="h-4 w-full opacity-0" aria-hidden="true" />
+                        {isLoadingMore && <div className="text-center py-4 text-muted-foreground">Loading more photos...</div>}
+                    </>
                 )}
             </main>
 
@@ -847,7 +996,12 @@ export default function GalleryDetailPage() {
             <Dialog open={!!selectedPhoto} onOpenChange={(open) => !open && setSelectedPhoto(null)}>
                 <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
                     <DialogHeader>
-                        <DialogTitle>{selectedPhoto?.filename}</DialogTitle>
+                        <DialogTitle className="flex flex-col gap-1">
+                            <span>{selectedPhoto?.filename}</span>
+                            {selectedPhoto?.originalFilename && (
+                                <span className="text-sm font-normal text-muted-foreground">Original: {selectedPhoto.originalFilename}</span>
+                            )}
+                        </DialogTitle>
                     </DialogHeader>
                     {selectedPhoto && (
                         <div className="space-y-6">
@@ -868,6 +1022,7 @@ export default function GalleryDetailPage() {
                                             await galleryApi.update(galleryId, { coverPhotoId: newCoverId || null });
                                             setGallery({ ...gallery, coverPhotoId: newCoverId });
                                             toast.success(newCoverId ? 'Cover photo set' : 'Cover photo removed');
+                                            refreshAll(); // Refresh to update badges
                                         } catch (error) {
                                             toast.error('Failed to update cover photo');
                                         }

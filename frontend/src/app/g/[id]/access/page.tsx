@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { galleryApi, faceApi, setSessionToken, studioApi } from '@/lib/api';
 import { isCustomDomain, getNormalizedHost } from '@/lib/domain';
+import { getGuestSessionToken, getStoredMobile, setStoredMobile } from '@/lib/guest-session';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -22,6 +23,7 @@ interface GalleryConfig {
     eventDate: string | null;
     coverPhotoUrl: string | null;
     selfieMatchingEnabled: boolean;
+    requireMobileForSelfie: boolean;  // MOBILE_SELFIE_REUSE
     // DOWNLOAD_CONTROLS_V1: Structured download settings
     downloads: {
         individual: { enabled: boolean; allowedFor: 'clients' | 'guests' | 'both' };
@@ -55,6 +57,8 @@ export default function GalleryAccessPage() {
     const [selfiePreview, setSelfiePreview] = useState<string | null>(null);
     const [consentChecked, setConsentChecked] = useState(false);
     const [mobileNumber, setMobileNumber] = useState('');
+    const [mobileError, setMobileError] = useState('');  // MOBILE_SELFIE_REUSE: Validation error
+    const [mobileChecked, setMobileChecked] = useState(false);  // MOBILE_SELFIE_REUSE: Track if we've checked for mobile reuse
     const [isLoading, setIsLoading] = useState(false);
 
     // Processing state
@@ -107,6 +111,21 @@ export default function GalleryAccessPage() {
         resolveAndFetchConfig();
     }, [urlParam]);
 
+    // Handle mobile phase skip logic when config loads
+    useEffect(() => {
+        if (!config || !galleryId) return;
+
+        // Load stored mobile if available
+        const storedMobile = getStoredMobile(galleryId);
+        if (storedMobile) {
+            setMobileNumber(storedMobile);
+            setMobileChecked(true);  // Skip Phase 1 - already have mobile
+        } else if (!config.requireMobileForSelfie) {
+            // If mobile not required and no stored mobile, skip Phase 1 entirely
+            setMobileChecked(true);
+        }
+    }, [config, galleryId]);
+
     // Simulate progress during processing
     useEffect(() => {
         if (screen === 'processing') {
@@ -156,6 +175,57 @@ export default function GalleryAccessPage() {
         }
     };
 
+    // MOBILE_SELFIE_REUSE: Check for existing selfie mapping before upload
+    const handleMobileCheck = async () => {
+        if (!galleryId) {
+            toast.error('Please wait, loading gallery...');
+            return;
+        }
+
+        // Validate mobile if required
+        if (config?.requireMobileForSelfie && !mobileNumber.trim()) {
+            setMobileError('Mobile number is required');
+            return;
+        }
+        setMobileError('');
+
+        // If no mobile provided and not required, skip check and go to upload
+        if (!mobileNumber.trim()) {
+            setMobileChecked(true);
+            return;
+        }
+
+        setIsLoading(true);
+        try {
+            const result = await faceApi.checkMobile(galleryId, mobileNumber);
+
+            if (result.found && result.sessionToken) {
+                // MOBILE REUSE: Skip selfie entirely!
+                setSessionToken(result.sessionToken);
+                sessionStorage.setItem('selfie_reused', 'true');
+                sessionStorage.setItem('guest_mobile', mobileNumber);
+                sessionStorage.setItem('guest_matched_count', (result.matchedCount || 0).toString());
+
+                if (result.selfieUrl) {
+                    sessionStorage.setItem('guest_selfie_preview', result.selfieUrl);
+                }
+
+                toast.success('Found your previous photos!');
+                router.push(`/g/${galleryId}`);
+                return;
+            }
+
+            // No reuse found, proceed to selfie upload
+            setMobileChecked(true);
+        } catch (error) {
+            console.error('Mobile check failed:', error);
+            // On error, proceed to selfie upload
+            setMobileChecked(true);
+        } finally {
+            setIsLoading(false);
+        }
+    };
+
     const handleSelfieSubmit = async () => {
         if (!selfieFile || !consentChecked) return;
         if (!galleryId) {
@@ -163,19 +233,35 @@ export default function GalleryAccessPage() {
             return;
         }
 
+        // MOBILE_SELFIE_REUSE: Validate mobile if required
+        if (config?.requireMobileForSelfie && !mobileNumber.trim()) {
+            setMobileError('Mobile number is required');
+            return;
+        }
+        setMobileError('');
+
         setScreen('processing');
         setProgress(0);
 
         try {
-            const result = await faceApi.guestAccess(galleryId, mobileNumber, selfieFile);
+            const sessionToken = getGuestSessionToken(galleryId);
+            const result = await faceApi.guestAccess(galleryId, mobileNumber || undefined, selfieFile, sessionToken);
             setSessionToken(result.sessionToken);
             setGalleryName(result.gallery.name);
             setProgress(100);
 
-            if (selfiePreview) {
-                sessionStorage.setItem('guest_selfie_preview', selfiePreview);
-                sessionStorage.setItem('guest_matched_count', result.matchedCount.toString());
+            // Store mobile for future reuse
+            if (mobileNumber) {
+                setStoredMobile(galleryId, mobileNumber);
             }
+
+            // Store selfie preview
+            if (result.selfieUrl) {
+                sessionStorage.setItem('guest_selfie_preview', result.selfieUrl);
+            } else if (selfiePreview) {
+                sessionStorage.setItem('guest_selfie_preview', selfiePreview);
+            }
+            sessionStorage.setItem('guest_matched_count', result.matchedCount.toString());
 
             setTimeout(() => {
                 if (result.matchedCount === 0) {
@@ -188,6 +274,8 @@ export default function GalleryAccessPage() {
         } catch (error: any) {
             if (error.message?.includes('RATE_LIMIT_EXCEEDED')) {
                 toast.error('Too many attempts. Please try again in a few minutes.');
+            } else if (error.message?.includes('Mobile number is required')) {
+                setMobileError('Mobile number is required for this gallery');
             } else {
                 toast.error('Something went wrong. Please try again or use an access code.');
             }
@@ -391,7 +479,7 @@ export default function GalleryAccessPage() {
     );
 
     // =========================================================================
-    // SELFIE UPLOAD SCREEN
+    // SELFIE UPLOAD SCREEN (with mobile-first reuse flow)
     // =========================================================================
     const renderSelfieScreen = () => (
         <div className="w-full max-w-md mx-auto px-4">
@@ -399,7 +487,14 @@ export default function GalleryAccessPage() {
                 {/* Header */}
                 <div className="flex items-center px-4 py-4 border-b border-gray-100">
                     <button
-                        onClick={() => setScreen('entry')}
+                        onClick={() => {
+                            setScreen('entry');
+                            // Only reset mobileChecked if mobile IS required AND no stored mobile
+                            // This prevents Bug 2 - mobile prompt appearing after navigation when not required
+                            if (config?.requireMobileForSelfie && !getStoredMobile(galleryId || '')) {
+                                setMobileChecked(false);
+                            }
+                        }}
                         className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
                     >
                         <svg className="w-5 h-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -410,91 +505,135 @@ export default function GalleryAccessPage() {
                 </div>
 
                 <div className="p-6">
-                    {/* Upload Zone */}
-                    <div
-                        onClick={() => fileInputRef.current?.click()}
-                        className="relative border-2 border-dashed border-gray-300 rounded-xl p-8 cursor-pointer hover:border-[#8B1538] hover:bg-rose-50/50 transition-all"
-                    >
-                        {selfiePreview ? (
-                            <div className="flex flex-col items-center">
-                                <img
-                                    src={selfiePreview}
-                                    alt="Your selfie"
-                                    className="w-32 h-32 object-cover rounded-full border-4 border-white shadow-lg"
-                                />
-                                <p className="text-sm text-gray-500 mt-3">Tap to change photo</p>
-                            </div>
-                        ) : (
-                            <div className="flex flex-col items-center">
-                                <div className="w-20 h-20 bg-rose-50 rounded-full flex items-center justify-center mb-4">
-                                    <svg className="w-10 h-10 text-[#8B1538]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                    {/* PHASE 1: Mobile input (shown first) */}
+                    {!mobileChecked && (
+                        <>
+                            <div className="text-center mb-6">
+                                <div className="w-16 h-16 bg-rose-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <svg className="w-8 h-8 text-[#8B1538]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
                                     </svg>
                                 </div>
-                                <p className="text-gray-700 font-medium mb-1">Upload a selfie</p>
-                                <p className="text-gray-400 text-sm">We'll find all photos you appear in</p>
+                                <h3 className="font-medium text-gray-800 mb-1">Enter your mobile number</h3>
+                                <p className="text-sm text-gray-500">We'll check if we have your photos already</p>
                             </div>
-                        )}
-                    </div>
 
-                    <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept="image/*"
-                        onChange={handleFileChange}
-                        className="hidden"
-                    />
-                    <input
-                        ref={cameraInputRef}
-                        type="file"
-                        accept="image/*"
-                        capture="user"
-                        onChange={handleFileChange}
-                        className="hidden"
-                    />
+                            <div className="space-y-4">
+                                <Input
+                                    type="tel"
+                                    placeholder="Your mobile number"
+                                    value={mobileNumber}
+                                    onChange={(e) => {
+                                        setMobileNumber(e.target.value);
+                                        setMobileError('');
+                                    }}
+                                    className={`h-14 text-center text-lg ${mobileError ? 'border-red-500' : ''}`}
+                                />
+                                {mobileError && (
+                                    <p className="text-sm text-red-500 text-center">{mobileError}</p>
+                                )}
 
-                    {/* Mobile Number (Optional) */}
-                    {selfiePreview && (
-                        <div className="mt-4 space-y-2">
-                            <Label htmlFor="mobileNumber" className="text-gray-500 text-sm">
-                                Mobile number (optional, for photo delivery)
-                            </Label>
-                            <Input
-                                id="mobileNumber"
-                                type="tel"
-                                placeholder="Your mobile number"
-                                value={mobileNumber}
-                                onChange={(e) => setMobileNumber(e.target.value)}
-                                className="h-12 bg-gray-50 border-gray-200"
-                            />
-                        </div>
+                                <Button
+                                    onClick={handleMobileCheck}
+                                    disabled={isLoading}
+                                    className="w-full h-14 bg-[#8B1538] hover:bg-[#7a1230] text-white font-medium rounded-xl shadow-lg"
+                                >
+                                    {isLoading ? 'Checking...' : 'Continue'}
+                                </Button>
+
+                                {/* Skip option (only if mobile not required) */}
+                                {!config?.requireMobileForSelfie && (
+                                    <button
+                                        onClick={() => setMobileChecked(true)}
+                                        className="w-full text-sm text-gray-500 hover:text-gray-700 py-2"
+                                    >
+                                        Skip, just upload selfie
+                                    </button>
+                                )}
+                            </div>
+                        </>
                     )}
 
-                    {/* Consent & Submit */}
-                    {selfiePreview && (
-                        <div className="mt-6 space-y-4">
-                            <div className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
-                                <Checkbox
-                                    id="consent"
-                                    checked={consentChecked}
-                                    onCheckedChange={(checked) => setConsentChecked(checked as boolean)}
-                                    className="mt-1"
-                                />
-                                <label htmlFor="consent" className="text-sm text-gray-600 leading-relaxed cursor-pointer">
-                                    I consent to facial recognition to find my photos. My data is processed securely and not shared.
-                                </label>
+                    {/* PHASE 2: Selfie upload (shown after mobile check) */}
+                    {mobileChecked && (
+                        <>
+                            {/* Upload Zone */}
+                            <div
+                                onClick={() => fileInputRef.current?.click()}
+                                className="relative border-2 border-dashed border-gray-300 rounded-xl p-8 cursor-pointer hover:border-[#8B1538] hover:bg-rose-50/50 transition-all"
+                            >
+                                {selfiePreview ? (
+                                    <div className="flex flex-col items-center">
+                                        <img
+                                            src={selfiePreview}
+                                            alt="Your selfie"
+                                            className="w-32 h-32 object-cover rounded-full border-4 border-white shadow-lg"
+                                        />
+                                        <p className="text-sm text-gray-500 mt-3">Tap to change photo</p>
+                                    </div>
+                                ) : (
+                                    <div className="flex flex-col items-center">
+                                        <div className="w-20 h-20 bg-rose-50 rounded-full flex items-center justify-center mb-4">
+                                            <svg className="w-10 h-10 text-[#8B1538]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
+                                            </svg>
+                                        </div>
+                                        <p className="text-gray-700 font-medium mb-1">Upload a selfie</p>
+                                        <p className="text-gray-400 text-sm">We'll find all photos you appear in</p>
+                                    </div>
+                                )}
                             </div>
 
-                            <Button
-                                type="button"
-                                onClick={handleSelfieSubmit}
-                                disabled={!consentChecked || isLoading}
-                                className="w-full h-14 bg-[#8B1538] hover:bg-[#7a1230] text-white font-medium rounded-xl shadow-lg transform hover:scale-[1.01] transition-all disabled:opacity-50 disabled:transform-none"
-                            >
-                                Find My Photos
-                            </Button>
-                        </div>
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept="image/*"
+                                onChange={handleFileChange}
+                                className="hidden"
+                            />
+                            <input
+                                ref={cameraInputRef}
+                                type="file"
+                                accept="image/*"
+                                capture="user"
+                                onChange={handleFileChange}
+                                className="hidden"
+                            />
+
+                            {/* Mobile number reminder (if provided) */}
+                            {mobileNumber && (
+                                <p className="text-xs text-gray-400 mt-3 text-center">
+                                    Using mobile: {mobileNumber}
+                                </p>
+                            )}
+
+                            {/* Consent & Submit */}
+                            {selfiePreview && (
+                                <div className="mt-6 space-y-4">
+                                    <div className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
+                                        <Checkbox
+                                            id="consent"
+                                            checked={consentChecked}
+                                            onCheckedChange={(checked) => setConsentChecked(checked as boolean)}
+                                            className="mt-1"
+                                        />
+                                        <label htmlFor="consent" className="text-sm text-gray-600 leading-relaxed cursor-pointer">
+                                            I consent to facial recognition to find my photos. My data is processed securely and not shared.
+                                        </label>
+                                    </div>
+
+                                    <Button
+                                        type="button"
+                                        onClick={handleSelfieSubmit}
+                                        disabled={!consentChecked || isLoading}
+                                        className="w-full h-14 bg-[#8B1538] hover:bg-[#7a1230] text-white font-medium rounded-xl shadow-lg transform hover:scale-[1.01] transition-all disabled:opacity-50 disabled:transform-none"
+                                    >
+                                        Find My Photos
+                                    </Button>
+                                </div>
+                            )}
+                        </>
                     )}
                 </div>
             </div>

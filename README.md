@@ -30,9 +30,11 @@ docker-compose up -d
 cd backend
 npm install
 npm run db:generate   # Generate Prisma client
-npm run db:push       # Create tables
+npm run db:push       # Create tables (local only)
 npm run dev           # Start server on http://localhost:3001
 ```
+
+> **IMPORTANT**: For production, use `npx prisma migrate deploy` only. **Never use `db:push` or `migrate reset` on production databases.** All schema changes must be additive migrations.
 
 ### 3. Setup Frontend
 
@@ -175,7 +177,7 @@ The share modal auto-selects the best available option and remembers user prefer
 | GET | /api/photos/gallery/:id | JWT/Session | Get gallery photos |
 | GET | /api/photos/:id/download | JWT/Session | Get download URL |
 | POST | /api/selections/:photoId | Session | Select photo |
-| DELETE | /api/selections/:photoId | Session | Unselect photo |
+| POST | /api/selections/:photoId | Session | Set selection (body: `{ selected: boolean }`) |
 | POST | /api/comments/:photoId | Session | Add comment |
 | POST | /api/print-requests/:photoId | Session | Request print |
 | POST | /api/face/guest-access | - | Selfie access |

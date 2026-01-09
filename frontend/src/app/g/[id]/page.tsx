@@ -1,10 +1,12 @@
 'use client';
 
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useRef, useCallback, useState, useEffect } from 'react';
+import Masonry from 'react-masonry-css';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { photoApi, galleryApi, selectionApi, commentApi, printApi, faceApi, setSessionToken, Photo, Gallery, Comment, getSessionToken, API_URL, studioApi, DownloadSettings, DEFAULT_DOWNLOAD_SETTINGS } from '@/lib/api';
 import { isCustomDomain, getNormalizedHost, isUUID } from '@/lib/domain';
+import { getGuestSessionToken, getStoredMobile } from '@/lib/guest-session';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
@@ -89,14 +91,15 @@ export default function ClientGalleryPage() {
 
         try {
             // Initial load gets Gallery info and First page of "All" photos
-            const [galleryRes, photosRes, selectionsRes] = await Promise.all([
+            // Initial load gets Gallery info and First page of "All" photos
+            const [galleryRes, photosRes] = await Promise.all([
                 galleryApi.get(galleryId, true),
                 photoApi.getByGallery(galleryId, { limit: 50 }, true),
-                selectionApi.getMy().catch(() => ({ selections: [] })),
             ]);
 
             setGallery(galleryRes.gallery);
 
+            // Initialize 'all' section with first page
             // Initialize 'all' section with first page
             setSectionData(prev => ({
                 ...prev,
@@ -108,7 +111,14 @@ export default function ClientGalleryPage() {
                 }
             }));
 
-            setSelectedIds(new Set(selectionsRes.selections.map(s => s.photoId)));
+            // Sync selections from loaded photos
+            const newSelectedIds = new Set<string>();
+            photosRes.photos.forEach(p => {
+                if (p.isSelected) newSelectedIds.add(p.id);
+            });
+            setSelectedIds(newSelectedIds);
+
+            // setSelectedIds(new Set(selectionsRes.selections.map(s => s.photoId))); // REMOVED
 
             // Check if this is a guest session
             // Guest detection now handled by selfie presence check in useEffect
@@ -180,6 +190,15 @@ export default function ClientGalleryPage() {
                 cursor: cursor || undefined,
                 limit: 50
             }, true);
+
+            // Sync selections from loaded photos
+            setSelectedIds(current => {
+                const next = new Set(current);
+                res.photos.forEach(p => {
+                    if (p.isSelected) next.add(p.id);
+                });
+                return next;
+            });
 
             setSectionData(prev => {
                 const existing = prev[sectionId] || { photos: [] };
@@ -380,11 +399,19 @@ export default function ClientGalleryPage() {
     }, [resolvedGalleryId, isDownloading]);
 
     // Load guest selfie from sessionStorage
+    const [selfieReused, setSelfieReused] = useState(false);
+
     useEffect(() => {
         const savedSelfie = sessionStorage.getItem('guest_selfie_preview');
+        const isReused = sessionStorage.getItem('selfie_reused') === 'true';
+
         if (savedSelfie) {
             setGuestSelfiePreview(savedSelfie);
+        }
+
+        if (savedSelfie || isReused) {
             setIsPrimaryClient(false); // Guest users have a stored selfie
+            setSelfieReused(isReused);
         }
     }, []);
 
@@ -541,21 +568,20 @@ export default function ClientGalleryPage() {
             return;
         }
 
-        const isSelected = selectedIds.has(photoId);
+        const isCurrentlySelected = selectedIds.has(photoId);
+        const targetState = !isCurrentlySelected; // Intent: Flip state
+
+        // Optimistic update
         const newSelected = new Set(selectedIds);
-        if (isSelected) {
-            newSelected.delete(photoId);
-        } else {
+        if (targetState) {
             newSelected.add(photoId);
+        } else {
+            newSelected.delete(photoId);
         }
         setSelectedIds(newSelected);
 
         try {
-            if (isSelected) {
-                await selectionApi.unselect(photoId);
-            } else {
-                await selectionApi.select(photoId);
-            }
+            await selectionApi.set(photoId, targetState);
         } catch (error) {
             setSelectedIds(selectedIds);
             toast.error(error instanceof Error ? error.message : 'Failed to update selection');
@@ -634,18 +660,18 @@ export default function ClientGalleryPage() {
     };
 
     const handleReMatchSelfie = async () => {
-        if (!newSelfieFile) return;
+        if (!newSelfieFile || !resolvedGalleryId) return;
 
         setIsReMatchingSelfie(true);
         try {
-            // We need the mobile number - retrieve from a prompt or session
-            const mobileNumber = prompt('Enter your mobile number to re-match:');
-            if (!mobileNumber) {
-                setIsReMatchingSelfie(false);
-                return;
-            }
+            // Get guestSessionToken for rate limiting and session-based reuse
+            const guestToken = getGuestSessionToken(resolvedGalleryId);
 
-            const result = await faceApi.guestAccess(resolvedGalleryId!, mobileNumber, newSelfieFile);
+            // Use stored mobile if available, otherwise mobile is optional for re-match
+            const storedMobile = getStoredMobile(resolvedGalleryId);
+            const mobileNumber = storedMobile || undefined;
+
+            const result = await faceApi.guestAccess(resolvedGalleryId, mobileNumber, newSelfieFile, guestToken);
             setSessionToken(result.sessionToken);
 
             // Update stored selfie
@@ -665,7 +691,7 @@ export default function ClientGalleryPage() {
             setShowSelfieChange(false);
             setNewSelfieFile(null);
             setNewSelfiePreview(null);
-            loadData(resolvedGalleryId!);
+            loadData(resolvedGalleryId);
         } catch (error) {
             toast.error(error instanceof Error ? error.message : 'Failed to re-match selfie');
         } finally {
@@ -694,8 +720,8 @@ export default function ClientGalleryPage() {
 
     if (!gallery) return null;
 
-    // Guests are identified by having a selfie preview - they cannot select
-    const isGuest = !!guestSelfiePreview;
+    // Guests are identified by having a selfie preview OR reused selfie flag
+    const isGuest = !!guestSelfiePreview || selfieReused;
     const canSelect = gallery.selectionState === 'OPEN' && !isGuest;
 
     // DOWNLOAD_CONTROLS_V1: Compute download permissions based on role
@@ -875,15 +901,21 @@ export default function ClientGalleryPage() {
             />
 
             {/* Guest Selfie Card - Shown if guest uploaded a selfie */}
-            {guestSelfiePreview && (
+            {(guestSelfiePreview || selfieReused) && (
                 <div className="container mx-auto px-4 pt-4">
                     <Card className="p-4">
                         <div className="flex items-center gap-4">
-                            <img
-                                src={guestSelfiePreview}
-                                alt="Your selfie"
-                                className="w-16 h-16 rounded-full object-cover border-2 border-primary"
-                            />
+                            {guestSelfiePreview ? (
+                                <img
+                                    src={guestSelfiePreview}
+                                    alt="Your selfie"
+                                    className="w-16 h-16 rounded-full object-cover border-2 border-primary"
+                                />
+                            ) : (
+                                <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center border-2 border-primary">
+                                    <span className="text-2xl" role="img" aria-label="user">👤</span>
+                                </div>
+                            )}
                             <div className="flex-1">
                                 <p className="text-sm font-medium">Your uploaded selfie</p>
                                 <p className="text-xs text-muted-foreground">
@@ -974,7 +1006,15 @@ export default function ClientGalleryPage() {
                         </CardContent>
                     </Card>
                 ) : (
-                    <div className="columns-2 md:columns-3 lg:columns-4 gap-3 space-y-3">
+                    <Masonry
+                        breakpointCols={{
+                            default: 4,
+                            1024: 3,
+                            640: 2
+                        }}
+                        className="flex w-auto gap-3"
+                        columnClassName="flex flex-col gap-3 bg-clip-padding"
+                    >
                         {filteredPhotos.map((photo) => {
                             // Determine if this is a portrait or landscape image based on dimensions
                             const isPortrait = photo.height && photo.width ? photo.height > photo.width : false;
@@ -982,13 +1022,13 @@ export default function ClientGalleryPage() {
                             return (
                                 <div
                                     key={photo.id}
-                                    className="break-inside-avoid overflow-hidden bg-muted relative group cursor-pointer mb-3 shadow-sm hover:shadow-lg transition-shadow"
+                                    className="relative w-full group cursor-pointer"
                                     onClick={() => setSelectedPhoto(photo)}
                                 >
                                     <img
                                         src={photo.webUrl || photo.lqipBase64}
                                         alt={photo.filename}
-                                        className="w-full h-auto object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+                                        className="w-full h-auto block object-contain"
                                         style={{
                                             backgroundImage: photo.lqipBase64 ? `url(${photo.lqipBase64})` : undefined,
                                             backgroundSize: 'cover',
@@ -1033,7 +1073,7 @@ export default function ClientGalleryPage() {
                                 </div>
                             );
                         })}
-                    </div>
+                    </Masonry>
                 )}
 
                 {/* P2: Infinite Scroll Sentinel & Loader */}
