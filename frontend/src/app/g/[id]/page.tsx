@@ -1008,38 +1008,61 @@ export default function ClientGalleryPage() {
                 ) : (
                     <Masonry
                         breakpointCols={{
-                            default: 4,
-                            1024: 3,
-                            640: 2
+                            default: 4,   // Desktop: 4 columns
+                            768: 2        // Mobile/Tablet: 2 columns
                         }}
                         className="flex w-auto gap-3"
                         columnClassName="flex flex-col gap-3 bg-clip-padding"
                     >
                         {filteredPhotos.map((photo) => {
-                            // Determine if this is a portrait or landscape image based on dimensions
-                            const isPortrait = photo.height && photo.width ? photo.height > photo.width : false;
+                            // Calculate aspect ratio from photo dimensions
+                            const aspectRatio = photo.width && photo.height
+                                ? photo.width / photo.height
+                                : 1; // Default to square if no dimensions
 
                             return (
                                 <div
                                     key={photo.id}
-                                    className="relative w-full group cursor-pointer"
+                                    className="relative w-full group cursor-pointer overflow-hidden"
+                                    style={{
+                                        aspectRatio: aspectRatio.toFixed(3),
+                                    }}
                                     onClick={() => setSelectedPhoto(photo)}
                                 >
-                                    <img
-                                        src={photo.webUrl || photo.lqipBase64}
-                                        alt={photo.filename}
-                                        className="w-full h-auto block object-contain"
+                                    {/* Skeleton placeholder with LQIP background */}
+                                    <div
+                                        className="absolute inset-0 bg-gray-200 animate-pulse"
                                         style={{
                                             backgroundImage: photo.lqipBase64 ? `url(${photo.lqipBase64})` : undefined,
                                             backgroundSize: 'cover',
+                                            backgroundPosition: 'center',
                                         }}
-                                        loading="lazy"
                                     />
 
-                                    {/* Selection Heart - fades in after images load */}
+                                    {/* Actual image - loads over skeleton */}
+                                    <img
+                                        src={photo.webUrl}
+                                        alt={photo.filename}
+                                        className="absolute inset-0 w-full h-full object-cover transition-opacity duration-300"
+                                        loading="lazy"
+                                        onLoad={(e) => {
+                                            // Fade in the image and show heart
+                                            const img = e.currentTarget;
+                                            img.style.opacity = '1';
+                                            const heart = img.parentElement?.querySelector('[data-heart]');
+                                            if (heart) {
+                                                (heart as HTMLElement).style.opacity = '1';
+                                            }
+                                        }}
+                                        style={{ opacity: 0 }}
+                                    />
+
+                                    {/* Selection Heart - hidden until image loads */}
                                     {canSelect && (
                                         <button
-                                            className="absolute top-3 right-3 z-10 p-1.5 rounded-full bg-white/80 backdrop-blur-sm shadow-md hover:bg-white transition-all hover:scale-110 animate-in fade-in duration-300 delay-200"
+                                            data-heart
+                                            className="absolute top-2 right-2 z-10 p-1.5 rounded-full bg-white/80 backdrop-blur-sm shadow-md hover:bg-white transition-all hover:scale-110"
+                                            style={{ opacity: 0, transition: 'opacity 0.3s ease' }}
                                             onClick={(e) => {
                                                 e.stopPropagation();
                                                 toggleSelection(photo.id);
@@ -1062,7 +1085,7 @@ export default function ClientGalleryPage() {
 
                                     {/* Download/Action indicator on hover */}
                                     {canDownload && (
-                                        <div className="absolute bottom-3 right-3 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+                                        <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
                                             <div className="w-8 h-8 rounded-full bg-white/90 flex items-center justify-center shadow-md">
                                                 <svg className="w-4 h-4 text-gray-700" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
